@@ -113,8 +113,11 @@ def event_type_color(event_type):
 
 # ---- Initialize ----
 
-db.init_db()
-init_achievements_db()
+try:
+    db.init_db()
+    init_achievements_db()
+except Exception as e:
+    print(f"[warn] DB init deferred (will retry on first request): {e}")
 
 
 # ---- Page Routes ----

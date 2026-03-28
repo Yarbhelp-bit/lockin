@@ -9,8 +9,18 @@ import os
 import time
 import json
 
-DB_PATH = "/var/lib/lockin/monitor.db"
-SCREENSHOTS_DIR = "/var/lib/lockin/screenshots"
+_SYSTEM_DB = "/var/lib/lockin/monitor.db"
+_USER_DB = os.path.join(os.path.expanduser("~"), ".local", "share", "lockin", "monitor.db")
+
+# Use system DB if writable, else fall back to user-local
+if os.path.exists(_SYSTEM_DB) and os.access(_SYSTEM_DB, os.W_OK):
+    DB_PATH = _SYSTEM_DB
+elif os.access(os.path.dirname(_SYSTEM_DB), os.W_OK) if os.path.isdir(os.path.dirname(_SYSTEM_DB)) else False:
+    DB_PATH = _SYSTEM_DB
+else:
+    DB_PATH = _USER_DB
+
+SCREENSHOTS_DIR = os.path.join(os.path.dirname(DB_PATH), "screenshots")
 
 
 def ensure_dirs():
