@@ -361,9 +361,9 @@ function renderSetupSession(container, statusData) {
                 ${durationBtns}
             </div>
 
-            <h3 style="margin-bottom:10px; font-size:11px; color:var(--text-dim);">Blocked Sites</h3>
+            <h3 style="margin-bottom:10px; font-size:11px; color:var(--text-dim);">Allowed Sites</h3>
             <div class="site-input-row">
-                <input type="text" id="site-input" placeholder="e.g. youtube.com" style="flex:1">
+                <input type="text" id="site-input" placeholder="e.g. github.com" style="flex:1">
                 <button class="btn btn-primary btn-sm" id="add-site-btn">ADD</button>
             </div>
             <div class="site-tags" id="site-tags">${siteTags}</div>
@@ -520,8 +520,8 @@ function renderActiveSession(container, data) {
                 </div>
             </div>
             <div class="panel">
-                <div class="panel-header">Blocked Sites</div>
-                <div id="blocked-sites-list">
+                <div class="panel-header">Allowed Sites</div>
+                <div id="allowed-sites-list">
                     ${(session.sites || []).map(s => `
                         <div style="padding:6px 0; border-bottom:1px solid var(--border); font-family:var(--font-mono); font-size:11px; color:var(--text);">
                             ${escapeHtml(s)}
