@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% block title %}Insights{% endblock %}
+
+{% block content %}
+<h1 style="font-size: 20px; font-weight: 700; margin-bottom: 24px;">Insights &amp; Patterns</h1>
+
+{% if has_data %}
+
+<!-- Weekly comparison -->
+<div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 24px;">
+    <div class="card" style="text-align: center;">
+        <div style="font-family: var(--mono); font-size: 28px; font-weight: 700; color: var(--accent);">{{ this_week_minutes|format_duration }}</div>
+        <div style="font-size: 11px; color: var(--text-dim); letter-spacing: 2px; margin-top: 4px;">THIS WEEK</div>
+        {% if week_diff != 0 %}
+        <div style="font-size: 12px; margin-top: 6px; color: {% if week_diff > 0 %}var(--green){% else %}var(--red){% endif %};">
+            {% if week_diff > 0 %}&#9650; +{{ week_diff }}m{% else %}&#9660; {{ week_diff }}m{% endif %} vs last week
+        </div>
+        {% endif %}
+    </div>
+    <div class="card" style="text-align: center;">
+        <div style="font-family: var(--mono); font-size: 28px; font-weight: 700; color: {% if prod_trend == 'improving' %}var(--green){% elif prod_trend == 'declining' %}var(--red){% else %}var(--text-dim){% endif %};">
+            {% if prod_trend == 'improving' %}&#9650;{% elif prod_trend == 'declining' %}&#9660;{% else %}&mdash;{% endif %} {{ prod_avg }}%
+        </div>
+        <div style="font-size: 11px; color: var(--text-dim); letter-spacing: 2px; margin-top: 4px;">PRODUCTIVITY TREND</div>
+    </div>
+    <div class="card" style="text-align: center;">
+        <div style="font-family: var(--mono); font-size: 28px; font-weight: 700; color: {% if focus_trend == 'improving' %}var(--green){% elif focus_trend == 'declining' %}var(--red){% else %}var(--text-dim){% endif %};">
+            {% if focus_trend == 'improving' %}&#9650;{% elif focus_trend == 'declining' %}&#9660;{% else %}&mdash;{% endif %} {{ focus_avg|round|int }}m
+        </div>
+        <div style="font-size: 11px; color: var(--text-dim); letter-spacing: 2px; margin-top: 4px;">DAILY FOCUS TREND</div>
+    </div>
+</div>
+
+<!-- Habit patterns -->
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px;">
+    <div class="card">
+        <h3 style="font-size: 12px; color: var(--text-dim); letter-spacing: 2px; margin-bottom: 16px;">HABIT PATTERNS</h3>
+        <div style="display: flex; flex-direction: column; gap: 12px;">
+            {% if best_day %}
+            <div style="display: flex; align-items: center; gap: 12px; padding: 12px; background: var(--surface-2); border-radius: 8px;">
+                <div style="width: 36px; height: 36px; border-radius: 8px; background: var(--green-dim); display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0;">&#128170;</div>
+                <div>
+                    <div style="font-size: 13px; font-weight: 600;">Most productive: {{ best_day }}s</div>
+                    <div style="font-size: 11px; color: var(--text-dim);">Avg score: {{ best_day_score }}%</div>
+                </div>
+            </div>
+            {% endif %}
+            {% if best_hour %}
+            <div style="display: flex; align-items: center; gap: 12px; padding: 12px; background: var(--surface-2); border-radius: 8px;">
+                <div style="width: 36px; height: 36px; border-radius: 8px; background: var(--blue-dim); display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0;">&#9200;</div>
+                <div>
+                    <div style="font-size: 13px; font-weight: 600;">Best focus hour: {{ best_hour }}</div>
+                    <div style="font-size: 11px; color: var(--text-dim);">Avg score: {{ best_hour_score }}%</div>
+                </div>
+            </div>
+            {% endif %}
+            {% if not best_day and not best_hour %}
+            <div style="text-align: center; padding: 16px; color: var(--text-dim); font-size: 13px;">Need more sessions to detect patterns</div>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="card">
+        <h3 style="font-size: 12px; color: var(--text-dim); letter-spacing: 2px; margin-bottom: 16px;">DISTRACTION ANALYSIS</h3>
+        <div style="display: flex; flex-direction: column; gap: 12px;">
+            <div style="display: flex; justify-content: space-between; padding: 10px 12px; background: var(--surface-2); border-radius: 8px;">
+                <span style="font-size: 13px; color: var(--text-dim);">Total bypass attempts</span>
+                <span style="font-family: var(--mono); font-weight: 600; color: {% if total_bypass %}var(--red){% else %}var(--green){% endif %};">{{ total_bypass }}</span>
+            </div>
+            <div style="display: flex; justify-content: space-between; padding: 10px 12px; background: var(--surface-2); border-radius: 8px;">
+                <span style="font-size: 13px; color: var(--text-dim);">Avg per session</span>
+                <span style="font-family: var(--mono); font-weight: 600;">{{ avg_bypass_per_session }}</span>
+            </div>
+            {% if avg_first_distraction is not none %}
+            <div style="display: flex; justify-content: space-between; padding: 10px 12px; background: var(--surface-2); border-radius: 8px;">
+                <span style="font-size: 13px; color: var(--text-dim);">Avg time to first distraction</span>
+                <span style="font-family: var(--mono); font-weight: 600;">{{ avg_first_distraction }}m</span>
+            </div>
+            {% endif %}
+        </div>
+        {% if top_distractions %}
+        <h4 style="font-size: 11px; color: var(--text-dim); letter-spacing: 1px; margin-top: 16px; margin-bottom: 8px;">TOP DISTRACTIONS</h4>
+        {% for name, count in top_distractions %}
+        <div style="display: flex; justify-content: space-between; font-size: 12px; padding: 6px 0; border-bottom: 1px solid var(--border);">
+            <span>{{ name }}</span>
+            <span style="color: var(--red); font-family: var(--mono);">{{ count }}x</span>
+        </div>
+        {% endfor %}
+        {% endif %}
+    </div>
+</div>
+
+<!-- 30-day charts -->
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px;">
+    <div class="card">
+        <h3 style="font-size: 12px; color: var(--text-dim); letter-spacing: 2px; margin-bottom: 16px;">PRODUCTIVITY (30 DAYS)</h3>
+        <canvas id="prod30Chart" height="180"></canvas>
+    </div>
+    <div class="card">
+        <h3 style="font-size: 12px; color: var(--text-dim); letter-spacing: 2px; margin-bottom: 16px;">FOCUS TIME (30 DAYS)</h3>
+        <canvas id="focus30Chart" height="180"></canvas>
+    </div>
+</div>
+
+<!-- AI Insights -->
+<div class="card" style="border-color: var(--accent); margin-bottom: 24px;">
+    <h3 style="font-size: 12px; color: var(--accent); letter-spacing: 2px; margin-bottom: 16px;">&#9733; AI INSIGHTS</h3>
+    {% if ai_insights %}
+    {% for insight in ai_insights %}
+    <div style="padding: 12px; background: var(--surface-2); border-radius: 8px; margin-bottom: 8px;">
+        <div style="font-size: 11px; color: var(--text-dim); margin-bottom: 6px;">{{ insight.date }}</div>
+        <div style="font-size: 13px; line-height: 1.6; white-space: pre-wrap;">{{ insight.insight }}</div>
+    </div>
+    {% endfor %}
+    {% else %}
+    <div style="text-align: center; padding: 24px; color: var(--text-dim);">
+        <div style="font-size: 24px; margin-bottom: 8px;">&#129302;</div>
+        <p style="font-size: 13px;">AI insights will appear after a few sessions.</p>
+        <p style="font-size: 11px; margin-top: 4px;">Requires ANTHROPIC_API_KEY environment variable.</p>
+    </div>
+    {% endif %}
+</div>
+
+{% else %}
+<div style="text-align: center; padding: 80px 32px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px;">
+    <div style="font-size: 48px; margin-bottom: 16px;">&#128200;</div>
+    <h2 style="font-size: 18px; margin-bottom: 8px;">Not enough data yet</h2>
+    <p style="color: var(--text-dim);">Complete a few focus sessions to unlock insights and pattern detection.</p>
+</div>
+{% endif %}
+
+<style>
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+</style>
+{% endblock %}
+
+{% block scripts %}
+{% if has_data %}
+<script>
+fetch('/api/stats?days=30').then(r=>r.json()).then(data=>{
+    const opts = {
+        responsive: true,
+        plugins: { legend: { display: false }, tooltip: { backgroundColor: '#1a1a1e', titleColor: '#e4e4e7', bodyColor: '#a1a1aa', borderColor: '#2a2a2e', borderWidth: 1, cornerRadius: 8 }},
+        scales: {
+            x: { grid: { color: '#1a1a1e' }, ticks: { color: '#52525b', font: { size: 10 }, maxRotation: 0, maxTicksLimit: 8, callback: function(v,i){ return data.labels[i] ? data.labels[i].slice(5) : ''; }}},
+            y: { grid: { color: '#1a1a1e' }, ticks: { color: '#52525b', font: { size: 10 }}}
+        }
+    };
+    new Chart('prod30Chart', { type: 'line', data: { labels: data.labels, datasets: [{ data: data.productivity, borderColor: '#22c55e', backgroundColor: 'rgba(34,197,94,0.08)', fill: true, tension: 0.4, pointRadius: 2 }]}, options: {...opts, scales: {...opts.scales, y: {...opts.scales.y, min: 0, max: 100 }}}});
+    new Chart('focus30Chart', { type: 'bar', data: { labels: data.labels, datasets: [{ data: data.focus_minutes, backgroundColor: 'rgba(249,115,22,0.5)', borderColor: '#f97316', borderWidth: 1, borderRadius: 3 }]}, options: opts });
+});
+</script>
+{% endif %}
+{% endblock %}

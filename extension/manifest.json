@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "Lock In",
+  "version": "2.0",
+  "description": "Block everything except the sites you choose. No escape.",
+  "permissions": [
+    "storage",
+    "tabs",
+    "notifications",
+    "alarms",
+    "webNavigation"
+  ],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "web_accessible_resources": [{
+    "resources": ["blocked.html"],
+    "matches": ["<all_urls>"]
+  }]
+}

@@ -1,0 +1,866 @@
+#!/usr/bin/env python3
+# ============================================================================
+# LOCK IN — Desktop GUI
+# Dark, modern GTK3 app for the system-level focus lock
+# ============================================================================
+
+import gi
+gi.require_version('Gtk', '3.0')
+from gi.repository import Gtk, Gdk, GLib, Pango
+import subprocess
+import os
+import time
+import json
+
+# ============================================================================
+# CSS Theme
+# ============================================================================
+
+CSS = b"""
+/* ---- Global ---- */
+* {
+    font-family: "Inter", "Segoe UI", "SF Pro Display", sans-serif;
+}
+
+window {
+    background-color: #0a0a0b;
+}
+
+/* ---- Header ---- */
+.logo {
+    font-size: 14px;
+    font-weight: 800;
+    letter-spacing: 6px;
+    color: #f97316;
+}
+
+.tagline {
+    font-size: 12px;
+    color: #71717a;
+}
+
+/* ---- Section labels ---- */
+.section-label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 3px;
+    color: #71717a;
+}
+
+/* ---- Duration buttons ---- */
+.dur-btn {
+    background: #111113;
+    border: 1px solid #2a2a2e;
+    color: #71717a;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 8px 14px;
+    border-radius: 8px;
+    min-width: 48px;
+    min-height: 36px;
+    transition: all 150ms;
+}
+
+.dur-btn:hover {
+    border-color: #f97316;
+    color: #e4e4e7;
+}
+
+.dur-btn.active,
+.dur-btn:checked {
+    background: rgba(249, 115, 22, 0.15);
+    border-color: #f97316;
+    color: #f97316;
+}
+
+/* ---- Site input ---- */
+.site-entry {
+    background: #111113;
+    border: 1px solid #2a2a2e;
+    color: #e4e4e7;
+    font-size: 14px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    caret-color: #f97316;
+    min-height: 40px;
+}
+
+.site-entry:focus {
+    border-color: #f97316;
+    box-shadow: 0 0 0 2px rgba(249, 115, 22, 0.15);
+}
+
+.add-btn {
+    background: #1a1a1e;
+    border: 1px solid #2a2a2e;
+    color: #f97316;
+    font-size: 20px;
+    font-weight: 700;
+    border-radius: 8px;
+    min-width: 42px;
+    min-height: 40px;
+    padding: 0;
+}
+
+.add-btn:hover {
+    border-color: #f97316;
+    background: rgba(249, 115, 22, 0.15);
+}
+
+/* ---- Site tags ---- */
+.site-tag {
+    background: #111113;
+    border: 1px solid #2a2a2e;
+    border-radius: 6px;
+    padding: 4px 10px;
+    color: #e4e4e7;
+    font-size: 12px;
+}
+
+.site-tag-remove {
+    background: none;
+    border: none;
+    color: #71717a;
+    font-size: 14px;
+    padding: 0 0 0 6px;
+    min-width: 20px;
+    min-height: 20px;
+}
+
+.site-tag-remove:hover {
+    color: #ef4444;
+}
+
+/* ---- Lock In button ---- */
+.lockin-btn {
+    background: #f97316;
+    color: #000000;
+    font-size: 15px;
+    font-weight: 800;
+    letter-spacing: 2px;
+    border: none;
+    border-radius: 12px;
+    min-height: 52px;
+    padding: 14px 40px;
+    transition: all 150ms;
+}
+
+.lockin-btn:hover {
+    background: #fb923c;
+}
+
+.lockin-btn:active {
+    background: #ea580c;
+}
+
+/* ---- Timer display ---- */
+.timer-text {
+    font-family: "JetBrains Mono", "Courier New", monospace;
+    font-size: 72px;
+    font-weight: 700;
+    color: #e4e4e7;
+    letter-spacing: -3px;
+}
+
+.active-label {
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 4px;
+    color: #f97316;
+}
+
+/* ---- Progress bar ---- */
+.progress-trough {
+    background: #1a1a1e;
+    border-radius: 3px;
+    min-height: 6px;
+}
+
+.progress-trough progress {
+    background: #f97316;
+    border-radius: 3px;
+    min-height: 6px;
+}
+
+progressbar trough {
+    background: #1a1a1e;
+    border-radius: 3px;
+    min-height: 6px;
+}
+
+progressbar progress {
+    background: #f97316;
+    border-radius: 3px;
+    min-height: 6px;
+}
+
+/* ---- Allowed site in active view ---- */
+.allowed-item {
+    background: #111113;
+    border: 1px solid #2a2a2e;
+    border-radius: 8px;
+    padding: 8px 14px;
+}
+
+.allowed-dot {
+    color: #22c55e;
+    font-size: 10px;
+}
+
+.allowed-domain {
+    color: #e4e4e7;
+    font-size: 13px;
+}
+
+/* ---- Fortified badge ---- */
+.fortified-badge {
+    background: #111113;
+    border: 1px solid #2a2a2e;
+    border-radius: 8px;
+    padding: 12px 16px;
+    color: #52525b;
+    font-size: 11px;
+    letter-spacing: 2px;
+}
+
+/* ---- Info text ---- */
+.info-text {
+    color: #71717a;
+    font-size: 12px;
+}
+
+.hint-text {
+    color: #52525b;
+    font-size: 11px;
+}
+
+/* ---- Status labels ---- */
+.status-value {
+    font-family: "JetBrains Mono", "Courier New", monospace;
+    font-size: 13px;
+    color: #a1a1aa;
+}
+
+.status-label {
+    font-size: 11px;
+    color: #52525b;
+    letter-spacing: 2px;
+}
+
+/* ---- Error ---- */
+.error-text {
+    color: #ef4444;
+    font-size: 12px;
+}
+
+/* ---- Separator ---- */
+.sep {
+    background: #1a1a1e;
+    min-height: 1px;
+}
+"""
+
+
+class LockInApp(Gtk.Window):
+    def __init__(self):
+        super().__init__(title="Lock In")
+        self.set_default_size(420, 620)
+        self.set_resizable(False)
+        self.set_position(Gtk.WindowPosition.CENTER)
+
+        # State
+        self.selected_minutes = 25
+        self.allowed_sites = []
+        self.session_active = False
+        self.timer_id = None
+
+        # Load saved sites
+        self.config_path = os.path.expanduser("~/.config/lockin")
+        os.makedirs(self.config_path, exist_ok=True)
+        self.load_saved_sites()
+
+        # Apply CSS
+        style_provider = Gtk.CssProvider()
+        style_provider.load_from_data(CSS)
+        Gtk.StyleContext.add_provider_for_screen(
+            Gdk.Screen.get_default(),
+            style_provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
+
+        # Main stack for view switching
+        self.stack = Gtk.Stack()
+        self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        self.stack.set_transition_duration(200)
+
+        # Build views
+        self.stack.add_named(self.build_setup_view(), "setup")
+        self.stack.add_named(self.build_active_view(), "active")
+
+        self.add(self.stack)
+
+        # Check if session is already running
+        self.check_existing_session()
+
+        # Block closing during session
+        self.connect("delete-event", self.on_close)
+
+    # ================================================================
+    # Setup View
+    # ================================================================
+
+    def build_setup_view(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        box.set_margin_top(32)
+        box.set_margin_bottom(24)
+        box.set_margin_start(28)
+        box.set_margin_end(28)
+
+        # Logo
+        logo = Gtk.Label(label="LOCK IN")
+        logo.get_style_context().add_class("logo")
+        box.pack_start(logo, False, False, 0)
+
+        tagline = Gtk.Label(label="Block everything. No escape. Do the work.")
+        tagline.get_style_context().add_class("tagline")
+        tagline.set_margin_top(6)
+        box.pack_start(tagline, False, False, 0)
+
+        # Spacer
+        box.pack_start(Gtk.Box(), False, False, 16)
+
+        # Duration section
+        dur_label = Gtk.Label(label="DURATION")
+        dur_label.get_style_context().add_class("section-label")
+        dur_label.set_halign(Gtk.Align.START)
+        box.pack_start(dur_label, False, False, 0)
+
+        dur_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        dur_box.set_margin_top(10)
+        dur_box.set_homogeneous(True)
+
+        self.dur_buttons = {}
+        durations = [("15m", 15), ("25m", 25), ("45m", 45), ("1h", 60), ("1.5h", 90), ("2h", 120)]
+        for label_text, mins in durations:
+            btn = Gtk.ToggleButton(label=label_text)
+            btn.get_style_context().add_class("dur-btn")
+            btn.connect("toggled", self.on_duration_toggled, mins)
+            if mins == 25:
+                btn.set_active(True)
+            self.dur_buttons[mins] = btn
+            dur_box.pack_start(btn, True, True, 0)
+
+        box.pack_start(dur_box, False, False, 0)
+
+        # Spacer
+        box.pack_start(Gtk.Box(), False, False, 16)
+
+        # Allowed sites section
+        sites_label = Gtk.Label(label="ALLOWED SITES")
+        sites_label.get_style_context().add_class("section-label")
+        sites_label.set_halign(Gtk.Align.START)
+        box.pack_start(sites_label, False, False, 0)
+
+        input_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        input_box.set_margin_top(10)
+
+        self.site_entry = Gtk.Entry()
+        self.site_entry.set_placeholder_text("e.g. github.com")
+        self.site_entry.get_style_context().add_class("site-entry")
+        self.site_entry.connect("activate", self.on_add_site)
+        input_box.pack_start(self.site_entry, True, True, 0)
+
+        add_btn = Gtk.Button(label="+")
+        add_btn.get_style_context().add_class("add-btn")
+        add_btn.connect("clicked", self.on_add_site)
+        input_box.pack_start(add_btn, False, False, 0)
+
+        box.pack_start(input_box, False, False, 0)
+
+        hint = Gtk.Label(label="Only these sites will work. Everything else is blocked.")
+        hint.get_style_context().add_class("hint-text")
+        hint.set_halign(Gtk.Align.START)
+        hint.set_margin_top(6)
+        box.pack_start(hint, False, False, 0)
+
+        # Sites flow box
+        self.sites_flow = Gtk.FlowBox()
+        self.sites_flow.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.sites_flow.set_homogeneous(False)
+        self.sites_flow.set_max_children_per_line(6)
+        self.sites_flow.set_margin_top(10)
+        self.sites_flow.set_row_spacing(6)
+        self.sites_flow.set_column_spacing(6)
+        box.pack_start(self.sites_flow, False, False, 0)
+
+        # Error label
+        self.error_label = Gtk.Label()
+        self.error_label.get_style_context().add_class("error-text")
+        self.error_label.set_halign(Gtk.Align.START)
+        self.error_label.set_margin_top(8)
+        self.error_label.set_no_show_all(True)
+        box.pack_start(self.error_label, False, False, 0)
+
+        # Spacer (expand to push button to bottom)
+        box.pack_start(Gtk.Box(), True, True, 0)
+
+        # Lock In button
+        self.lockin_btn = Gtk.Button(label="LOCK IN")
+        self.lockin_btn.get_style_context().add_class("lockin-btn")
+        self.lockin_btn.connect("clicked", self.on_lockin)
+        box.pack_start(self.lockin_btn, False, False, 0)
+
+        self.render_sites()
+        return box
+
+    # ================================================================
+    # Active View
+    # ================================================================
+
+    def build_active_view(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        box.set_margin_top(40)
+        box.set_margin_bottom(28)
+        box.set_margin_start(28)
+        box.set_margin_end(28)
+
+        # Active label
+        active_label = Gtk.Label(label="LOCKED IN")
+        active_label.get_style_context().add_class("active-label")
+        box.pack_start(active_label, False, False, 0)
+
+        # Timer
+        self.timer_label = Gtk.Label(label="25:00")
+        self.timer_label.get_style_context().add_class("timer-text")
+        self.timer_label.set_margin_top(12)
+        box.pack_start(self.timer_label, False, False, 0)
+
+        # Progress bar
+        self.progress_bar = Gtk.ProgressBar()
+        self.progress_bar.set_fraction(0.0)
+        self.progress_bar.set_margin_top(16)
+        box.pack_start(self.progress_bar, False, False, 0)
+
+        # Status row
+        status_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        status_box.set_margin_top(16)
+        status_box.set_homogeneous(True)
+
+        # Ends at
+        ends_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self.ends_at_label = Gtk.Label(label="--:--")
+        self.ends_at_label.get_style_context().add_class("status-value")
+        ends_box.pack_start(self.ends_at_label, False, False, 0)
+        ends_title = Gtk.Label(label="ENDS AT")
+        ends_title.get_style_context().add_class("status-label")
+        ends_box.pack_start(ends_title, False, False, 0)
+        status_box.pack_start(ends_box, True, True, 0)
+
+        # Duration
+        dur_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self.duration_label = Gtk.Label(label="25m")
+        self.duration_label.get_style_context().add_class("status-value")
+        dur_box.pack_start(self.duration_label, False, False, 0)
+        dur_title = Gtk.Label(label="DURATION")
+        dur_title.get_style_context().add_class("status-label")
+        dur_box.pack_start(dur_title, False, False, 0)
+        status_box.pack_start(dur_box, True, True, 0)
+
+        # Guard
+        guard_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self.guard_label = Gtk.Label(label="ACTIVE")
+        self.guard_label.get_style_context().add_class("status-value")
+        self.guard_label.set_markup('<span foreground="#22c55e">ACTIVE</span>')
+        guard_box.pack_start(self.guard_label, False, False, 0)
+        guard_title = Gtk.Label(label="GUARD")
+        guard_title.get_style_context().add_class("status-label")
+        guard_box.pack_start(guard_title, False, False, 0)
+        status_box.pack_start(guard_box, True, True, 0)
+
+        box.pack_start(status_box, False, False, 0)
+
+        # Separator
+        sep = Gtk.Separator()
+        sep.get_style_context().add_class("sep")
+        sep.set_margin_top(20)
+        sep.set_margin_bottom(16)
+        box.pack_start(sep, False, False, 0)
+
+        # Allowed sites label
+        allowed_label = Gtk.Label(label="ALLOWED SITES")
+        allowed_label.get_style_context().add_class("section-label")
+        allowed_label.set_halign(Gtk.Align.START)
+        box.pack_start(allowed_label, False, False, 0)
+
+        # Allowed sites list
+        self.active_sites_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.active_sites_box.set_margin_top(10)
+        box.pack_start(self.active_sites_box, False, False, 0)
+
+        # Spacer
+        box.pack_start(Gtk.Box(), True, True, 0)
+
+        # Monitor status
+        monitor_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        monitor_box.get_style_context().add_class("allowed-item")
+        monitor_box.set_margin_top(8)
+
+        self.monitor_dot = Gtk.Label()
+        self.monitor_dot.set_markup('<span foreground="#22c55e">\u25cf</span>')
+        monitor_box.pack_start(self.monitor_dot, False, False, 0)
+
+        self.monitor_status_label = Gtk.Label(label="Behavioral monitor active")
+        self.monitor_status_label.get_style_context().add_class("allowed-domain")
+        self.monitor_status_label.set_halign(Gtk.Align.START)
+        monitor_box.pack_start(self.monitor_status_label, True, True, 0)
+
+        box.pack_start(monitor_box, False, False, 0)
+
+        # Dashboard button
+        dashboard_btn = Gtk.Button(label="Open Analytics Dashboard")
+        dashboard_btn.get_style_context().add_class("dur-btn")
+        dashboard_btn.set_margin_top(8)
+        dashboard_btn.connect("clicked", self.on_open_dashboard)
+        box.pack_start(dashboard_btn, False, False, 0)
+
+        # Spacer
+        box.pack_start(Gtk.Box(), False, False, 8)
+
+        # Fortified badge
+        fortified = Gtk.Label(label="SYSTEM-LEVEL BLOCK ACTIVE  \u00b7  ALL BROWSERS  \u00b7  ALL APPS")
+        fortified.get_style_context().add_class("fortified-badge")
+        fortified.set_line_wrap(True)
+        fortified.set_justify(Gtk.Justification.CENTER)
+        box.pack_start(fortified, False, False, 0)
+
+        no_escape = Gtk.Label(label="No way out. Session ends when the timer hits zero.")
+        no_escape.get_style_context().add_class("hint-text")
+        no_escape.set_margin_top(10)
+        box.pack_start(no_escape, False, False, 0)
+
+        return box
+
+    # ================================================================
+    # Duration toggle logic
+    # ================================================================
+
+    def on_duration_toggled(self, button, minutes):
+        if button.get_active():
+            self.selected_minutes = minutes
+            # Untoggle other buttons
+            for mins, btn in self.dur_buttons.items():
+                if mins != minutes and btn.get_active():
+                    btn.handler_block_by_func(self.on_duration_toggled)
+                    btn.set_active(False)
+                    btn.handler_unblock_by_func(self.on_duration_toggled)
+        else:
+            # Don't allow deselecting the current one
+            if self.selected_minutes == minutes:
+                button.handler_block_by_func(self.on_duration_toggled)
+                button.set_active(True)
+                button.handler_unblock_by_func(self.on_duration_toggled)
+
+    # ================================================================
+    # Sites management
+    # ================================================================
+
+    def on_add_site(self, *args):
+        raw = self.site_entry.get_text().strip().lower()
+        raw = raw.replace("https://", "").replace("http://", "")
+        raw = raw.removeprefix("www.")
+        raw = raw.split("/")[0]
+
+        if not raw or raw in self.allowed_sites:
+            self.site_entry.set_text("")
+            return
+
+        self.allowed_sites.append(raw)
+        self.save_sites()
+        self.render_sites()
+        self.site_entry.set_text("")
+        self.site_entry.grab_focus()
+        self.hide_error()
+
+    def remove_site(self, domain):
+        self.allowed_sites = [s for s in self.allowed_sites if s != domain]
+        self.save_sites()
+        self.render_sites()
+
+    def render_sites(self):
+        # Clear existing
+        for child in self.sites_flow.get_children():
+            self.sites_flow.remove(child)
+
+        for domain in self.allowed_sites:
+            tag_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+            tag_box.get_style_context().add_class("site-tag")
+
+            label = Gtk.Label(label=domain)
+            label.set_margin_start(2)
+            tag_box.pack_start(label, False, False, 0)
+
+            remove_btn = Gtk.Button(label="\u00d7")
+            remove_btn.get_style_context().add_class("site-tag-remove")
+            remove_btn.connect("clicked", lambda b, d=domain: self.remove_site(d))
+            tag_box.pack_start(remove_btn, False, False, 0)
+
+            self.sites_flow.add(tag_box)
+
+        self.sites_flow.show_all()
+
+    def save_sites(self):
+        path = os.path.join(self.config_path, "sites.json")
+        with open(path, "w") as f:
+            json.dump(self.allowed_sites, f)
+
+    def load_saved_sites(self):
+        path = os.path.join(self.config_path, "sites.json")
+        try:
+            with open(path) as f:
+                self.allowed_sites = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            self.allowed_sites = []
+
+    # ================================================================
+    # Dashboard
+    # ================================================================
+
+    def on_open_dashboard(self, button):
+        import webbrowser
+        webbrowser.open("http://localhost:9999")
+
+    # ================================================================
+    # Lock In
+    # ================================================================
+
+    def on_lockin(self, button):
+        if not self.allowed_sites:
+            self.show_error("Add at least one allowed site first.")
+            return
+
+        self.lockin_btn.set_sensitive(False)
+        self.lockin_btn.set_label("STARTING...")
+
+        # Build command
+        sites_str = " ".join(self.allowed_sites)
+        cmd = f"lockin start {self.selected_minutes} {sites_str}"
+
+        # Run with pkexec for graphical sudo
+        try:
+            result = subprocess.run(
+                ["pkexec", "bash", "-c", cmd],
+                capture_output=True, text=True, timeout=30
+            )
+            if result.returncode != 0:
+                error_msg = result.stderr.strip() or result.stdout.strip() or "Failed to start session"
+                self.show_error(error_msg)
+                self.lockin_btn.set_sensitive(True)
+                self.lockin_btn.set_label("LOCK IN")
+                return
+        except subprocess.TimeoutExpired:
+            self.show_error("Timed out starting session.")
+            self.lockin_btn.set_sensitive(True)
+            self.lockin_btn.set_label("LOCK IN")
+            return
+        except FileNotFoundError:
+            self.show_error("'lockin' not found. Run install.sh first.")
+            self.lockin_btn.set_sensitive(True)
+            self.lockin_btn.set_label("LOCK IN")
+            return
+
+        # Switch to active view
+        self.session_active = True
+        self.switch_to_active()
+
+    def switch_to_active(self):
+        # Read session details
+        end_time, duration = self.read_session()
+
+        if end_time is None:
+            # Fallback: use selected values
+            end_time = time.time() + self.selected_minutes * 60
+            duration = self.selected_minutes
+
+        self.session_end_time = end_time
+        self.session_duration = duration
+
+        # Update active view
+        ends_str = time.strftime("%H:%M", time.localtime(end_time))
+        self.ends_at_label.set_text(ends_str)
+        self.duration_label.set_text(f"{duration}m")
+
+        # Render allowed sites
+        for child in self.active_sites_box.get_children():
+            self.active_sites_box.remove(child)
+
+        for domain in self.allowed_sites:
+            item = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            item.get_style_context().add_class("allowed-item")
+            item.set_margin_start(0)
+            item.set_margin_end(0)
+
+            dot = Gtk.Label(label="\u25cf")
+            dot.get_style_context().add_class("allowed-dot")
+            item.pack_start(dot, False, False, 0)
+
+            name = Gtk.Label(label=domain)
+            name.get_style_context().add_class("allowed-domain")
+            name.set_halign(Gtk.Align.START)
+            item.pack_start(name, True, True, 0)
+
+            self.active_sites_box.pack_start(item, False, False, 0)
+
+        self.active_sites_box.show_all()
+
+        # Start timer
+        self.update_timer()
+        if self.timer_id:
+            GLib.source_remove(self.timer_id)
+        self.timer_id = GLib.timeout_add_seconds(1, self.update_timer)
+
+        # Check guard status
+        self.update_guard_status()
+        GLib.timeout_add_seconds(10, self.update_guard_status)
+
+        self.stack.set_visible_child_name("active")
+
+    def update_timer(self):
+        now = time.time()
+        remaining = max(0, self.session_end_time - now)
+        total = self.session_duration * 60
+
+        if remaining <= 0:
+            self.timer_label.set_text("00:00")
+            self.progress_bar.set_fraction(1.0)
+            self.session_active = False
+            # Switch back to setup after a moment
+            GLib.timeout_add(2000, self.switch_to_setup)
+            return False  # Stop timer
+
+        mins = int(remaining // 60)
+        secs = int(remaining % 60)
+        self.timer_label.set_text(f"{mins:02d}:{secs:02d}")
+
+        elapsed = total - remaining
+        fraction = elapsed / total if total > 0 else 0
+        self.progress_bar.set_fraction(fraction)
+
+        return True  # Continue timer
+
+    def update_guard_status(self):
+        if not self.session_active:
+            return False
+        try:
+            result = subprocess.run(
+                ["systemctl", "is-active", "lockin-guard.service"],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.stdout.strip() == "active":
+                self.guard_label.set_markup('<span foreground="#22c55e">ACTIVE</span>')
+            else:
+                self.guard_label.set_markup('<span foreground="#ef4444">DOWN</span>')
+        except Exception:
+            self.guard_label.set_markup('<span foreground="#71717a">UNKNOWN</span>')
+        return self.session_active
+
+    def switch_to_setup(self):
+        self.session_active = False
+        self.lockin_btn.set_sensitive(True)
+        self.lockin_btn.set_label("LOCK IN")
+        if self.timer_id:
+            GLib.source_remove(self.timer_id)
+            self.timer_id = None
+        self.stack.set_visible_child_name("setup")
+        return False
+
+    # ================================================================
+    # Session helpers
+    # ================================================================
+
+    def read_session(self):
+        """Read /etc/lockin/session to get end time and duration."""
+        try:
+            with open("/etc/lockin/session") as f:
+                content = f.read()
+            end_time = None
+            duration = None
+            for line in content.splitlines():
+                if line.startswith("END_TIME="):
+                    end_time = int(line.split("=", 1)[1])
+                elif line.startswith("DURATION_MINUTES="):
+                    duration = int(line.split("=", 1)[1])
+            return end_time, duration
+        except (FileNotFoundError, PermissionError, ValueError):
+            return None, None
+
+    def check_existing_session(self):
+        """On startup, check if a session is already running."""
+        end_time, duration = self.read_session()
+        if end_time and time.time() < end_time:
+            self.session_active = True
+            self.session_end_time = end_time
+            self.session_duration = duration or 25
+
+            # Try to read allowed domains from session
+            try:
+                with open("/etc/lockin/session") as f:
+                    for line in f:
+                        if line.startswith("ALLOWED_DOMAINS="):
+                            domains = line.strip().split("=", 1)[1]
+                            self.allowed_sites = [d.strip() for d in domains.split(",") if d.strip()]
+            except Exception:
+                pass
+
+            GLib.idle_add(self.switch_to_active)
+
+    # ================================================================
+    # Window close blocking
+    # ================================================================
+
+    def on_close(self, widget, event):
+        if self.session_active:
+            # Prevent closing during active session
+            dialog = Gtk.MessageDialog(
+                transient_for=self,
+                modal=True,
+                message_type=Gtk.MessageType.WARNING,
+                buttons=Gtk.ButtonsType.OK,
+                text="You're locked in."
+            )
+            dialog.format_secondary_text(
+                "This window cannot be closed during an active session. "
+                "The session will end when the timer reaches zero."
+            )
+            dialog.run()
+            dialog.destroy()
+            return True  # Prevent close
+        return False  # Allow close
+
+    # ================================================================
+    # Error display
+    # ================================================================
+
+    def show_error(self, message):
+        self.error_label.set_text(message)
+        self.error_label.show()
+
+    def hide_error(self):
+        self.error_label.hide()
+
+
+# ============================================================================
+# Main
+# ============================================================================
+
+def main():
+    app = LockInApp()
+    app.connect("destroy", Gtk.main_quit)
+    app.show_all()
+    app.error_label.hide()
+
+    # If session is active on launch, ensure we're on active view
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    main()

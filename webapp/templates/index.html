@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LOCK IN // Command Center</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="scanlines"></div>
+
+    <nav class="sidebar">
+        <div class="sidebar-header">
+            <div class="logo">
+                <span class="logo-icon">[&nbsp;]</span>
+                <span class="logo-text">LOCK IN</span>
+            </div>
+            <div class="profile-section" id="profile-section">
+                <!-- Filled by JS: rank badge, level, XP bar -->
+            </div>
+        </div>
+
+        <div class="nav-items">
+            <a href="#/" class="nav-item active" data-view="command">
+                <span class="nav-icon">&#9678;</span>
+                <span>Command Center</span>
+            </a>
+            <a href="#/operations" class="nav-item" data-view="operations">
+                <span class="nav-icon">&#9776;</span>
+                <span>Operations</span>
+            </a>
+            <a href="#/intel" class="nav-item" data-view="intel">
+                <span class="nav-icon">&#9733;</span>
+                <span>Intelligence</span>
+            </a>
+            <a href="#/achievements" class="nav-item" data-view="achievements">
+                <span class="nav-icon">&#9813;</span>
+                <span>Achievements</span>
+            </a>
+        </div>
+
+        <div class="sidebar-footer">
+            <div class="system-status" id="system-status">
+                <span class="status-led"></span>
+                <span>System Idle</span>
+            </div>
+        </div>
+    </nav>
+
+    <main class="content">
+        <div id="main-content">
+            <!-- Views rendered here by JS -->
+        </div>
+    </main>
+
+    <div id="toast-container"></div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

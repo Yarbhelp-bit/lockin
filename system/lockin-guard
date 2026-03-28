@@ -1,0 +1,351 @@
+#!/usr/bin/env bash
+# ============================================================================
+# LOCK IN — Guard Daemon
+# Runs every 5 seconds. Re-applies all blocking layers if tampered with.
+# Cleans up when session expires or emergency cooldown elapses.
+# ============================================================================
+set -uo pipefail
+
+LOCKIN_DIR="/etc/lockin"
+SESSION_FILE="$LOCKIN_DIR/session"
+EMERGENCY_FILE="$LOCKIN_DIR/emergency"
+LOG_FILE="$LOCKIN_DIR/log"
+HOSTS_MARKER_START="# === LOCKIN_START ==="
+CHAIN="LOCKIN"
+EMERGENCY_COOLDOWN=600
+RERESOLVE_INTERVAL=60
+MONITOR_PID_FILE="$LOCKIN_DIR/monitor.pid"
+DASHBOARD_PID_FILE="$LOCKIN_DIR/dashboard.pid"
+INSTALL_DIR="/opt/lockin"
+
+last_resolve=0
+monitor_started=false
+
+log() {
+    echo "[$(date)] GUARD: $1" >> "$LOG_FILE"
+}
+
+now_ts() { date +%s; }
+
+read_session_field() {
+    grep "^$1=" "$SESSION_FILE" 2>/dev/null | cut -d= -f2
+}
+
+# ---- Cleanup ----
+
+cleanup_and_exit() {
+    log "Cleaning up — session ended"
+
+    # Stop monitor first
+    stop_monitor
+
+    # Save session ID before cleanup deletes the session file
+    local session_id=""
+    if [[ -f "$INSTALL_DIR/monitor/db.py" ]]; then
+        session_id=$(python3 -c "
+import sys
+sys.path.insert(0, '$INSTALL_DIR')
+from monitor import db
+s = db.get_active_session()
+print(s['id'] if s else '')
+" 2>/dev/null || true)
+    fi
+
+    # CRITICAL: Remove all blocking rules FIRST — restore internet before anything else
+    /usr/local/bin/lockin _cleanup
+    log "Blocking rules removed. Internet restored."
+
+    # NOW run analysis (needs internet for Claude API)
+    if [[ -n "$session_id" && -f "$INSTALL_DIR/analyzer/analyzer.py" ]]; then
+        log "Running end-of-session analysis (session $session_id)..."
+        timeout 60 python3 -c "
+import sys
+sys.path.insert(0, '$INSTALL_DIR')
+try:
+    from analyzer.analyzer import SessionAnalyzer
+    from analyzer.reporter import Reporter
+    analyzer = SessionAnalyzer()
+    reporter = Reporter(analyzer)
+    reporter.end_of_session_report($session_id)
+except Exception as e:
+    print(f'Analysis error: {e}', file=sys.stderr)
+" 2>>"$LOG_FILE" || log "Analysis failed or timed out (non-critical)."
+        log "Analysis complete."
+    fi
+
+    log "Cleanup complete. Guard exiting."
+    exit 0
+}
+
+# ---- Verify & re-apply iptables ----
+
+check_iptables() {
+    local allowed_ips
+    allowed_ips=$(read_session_field ALLOWED_IPS)
+
+    # Check if chain exists and is attached
+    if ! iptables -L "$CHAIN" -n >/dev/null 2>&1; then
+        log "TAMPER DETECTED: iptables chain missing. Re-applying."
+        reapply_iptables "$allowed_ips"
+        return
+    fi
+    if ! iptables -C OUTPUT -j "$CHAIN" 2>/dev/null; then
+        log "TAMPER DETECTED: iptables chain not attached. Re-applying."
+        iptables -I OUTPUT 1 -j "$CHAIN"
+    fi
+}
+
+reapply_iptables() {
+    local allowed_ips="$1"
+
+    # Clean existing
+    iptables -D OUTPUT -j "$CHAIN" 2>/dev/null || true
+    iptables -F "$CHAIN" 2>/dev/null || true
+    iptables -X "$CHAIN" 2>/dev/null || true
+
+    iptables -N "$CHAIN"
+
+    # Loopback & local
+    iptables -A "$CHAIN" -o lo -j ACCEPT
+    iptables -A "$CHAIN" -d 127.0.0.0/8 -j ACCEPT
+    iptables -A "$CHAIN" -d 192.168.0.0/16 -j ACCEPT
+    iptables -A "$CHAIN" -d 10.0.0.0/8 -j ACCEPT
+    iptables -A "$CHAIN" -d 172.16.0.0/12 -j ACCEPT
+    iptables -A "$CHAIN" -d 169.254.0.0/16 -j ACCEPT
+
+    # DNS to system resolver only
+    iptables -A "$CHAIN" -d 127.0.0.53 -p udp --dport 53 -j ACCEPT
+    iptables -A "$CHAIN" -d 127.0.0.53 -p tcp --dport 53 -j ACCEPT
+
+    # Block DoH providers
+    for doh_ip in 8.8.8.8 8.8.4.4 1.1.1.1 1.0.0.1 9.9.9.9 149.112.112.112 208.67.222.222 208.67.220.220; do
+        iptables -A "$CHAIN" -d "$doh_ip" -p tcp --dport 443 -j DROP
+        iptables -A "$CHAIN" -d "$doh_ip" -p udp --dport 443 -j DROP
+    done
+
+    # Block DoT
+    iptables -A "$CHAIN" -p tcp --dport 853 -j DROP
+    iptables -A "$CHAIN" -p udp --dport 853 -j DROP
+
+    # Whitelist allowed IPs
+    IFS=',' read -ra ip_arr <<< "$allowed_ips"
+    for ip in "${ip_arr[@]}"; do
+        ip=$(echo "$ip" | xargs)
+        [[ -z "$ip" ]] && continue
+        [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+        iptables -A "$CHAIN" -d "$ip" -p tcp --dport 80 -j ACCEPT
+        iptables -A "$CHAIN" -d "$ip" -p tcp --dport 443 -j ACCEPT
+        iptables -A "$CHAIN" -d "$ip" -p udp --dport 443 -j ACCEPT
+    done
+
+    # Block everything else
+    iptables -A "$CHAIN" -p tcp --dport 80 -j DROP
+    iptables -A "$CHAIN" -p tcp --dport 443 -j DROP
+    iptables -A "$CHAIN" -p udp --dport 443 -j DROP
+    iptables -A "$CHAIN" -p tcp --dport 8080 -j DROP
+    iptables -A "$CHAIN" -p tcp --dport 8443 -j DROP
+
+    # Block VPN/proxy
+    for port in 1080 1194 3128 9050 9150 51820 4500 500; do
+        iptables -A "$CHAIN" -p tcp --dport "$port" -j DROP
+        iptables -A "$CHAIN" -p udp --dport "$port" -j DROP
+    done
+
+    # Attach
+    iptables -I OUTPUT 1 -j "$CHAIN"
+}
+
+# ---- Verify IPv6 disabled ----
+
+check_ipv6() {
+    local v6_status
+    v6_status=$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null || echo "0")
+    if [[ "$v6_status" != "1" ]]; then
+        log "TAMPER DETECTED: IPv6 re-enabled. Disabling."
+        sysctl -q -w net.ipv6.conf.all.disable_ipv6=1
+        sysctl -q -w net.ipv6.conf.default.disable_ipv6=1
+    fi
+}
+
+# ---- Verify /etc/hosts ----
+
+check_hosts() {
+    if ! grep -q "$HOSTS_MARKER_START" /etc/hosts 2>/dev/null; then
+        log "TAMPER DETECTED: hosts file blocks removed. Re-applying."
+        local domains
+        domains=$(read_session_field ALLOWED_DOMAINS)
+        chattr -i /etc/hosts 2>/dev/null || true
+        # Re-apply hosts blocks inline (lockin start wrote these originally)
+        /usr/local/bin/lockin _apply_hosts "$domains" 2>/dev/null || true
+        chattr +i /etc/hosts 2>/dev/null || true
+    fi
+}
+
+# ---- Verify chattr ----
+
+check_chattr() {
+    # Re-apply immutable flags on all protected files
+    chattr +i /etc/hosts 2>/dev/null || true
+    chattr +i "$SESSION_FILE" 2>/dev/null || true
+    chattr +i /usr/local/bin/lockin 2>/dev/null || true
+    chattr +i /usr/local/bin/lockin-guard 2>/dev/null || true
+    chattr +i /etc/systemd/system/lockin-guard.service 2>/dev/null || true
+}
+
+# ---- Re-resolve domains periodically ----
+
+reresolve_domains() {
+    local now
+    now=$(now_ts)
+    if (( now - last_resolve < RERESOLVE_INTERVAL )); then
+        return
+    fi
+    last_resolve=$now
+
+    local domains
+    domains=$(read_session_field ALLOWED_DOMAINS)
+    [[ -n "$domains" ]] || return
+
+    local new_ips=""
+    IFS=',' read -ra dom_arr <<< "$domains"
+    for d in "${dom_arr[@]}"; do
+        new_ips+=$(dig +short A "$d" 2>/dev/null | grep -E '^[0-9]+\.' || true)
+        new_ips+=$'\n'
+        new_ips+=$(dig +short A "www.$d" 2>/dev/null | grep -E '^[0-9]+\.' || true)
+        new_ips+=$'\n'
+    done
+    new_ips=$(echo "$new_ips" | sort -u | grep -v '^$' | tr '\n' ',' | sed 's/,$//')
+
+    local old_ips
+    old_ips=$(read_session_field ALLOWED_IPS)
+
+    if [[ "$new_ips" != "$old_ips" && -n "$new_ips" ]]; then
+        log "IPs changed for allowed domains. Updating rules."
+        # Update session file
+        chattr -i "$SESSION_FILE" 2>/dev/null || true
+        sed -i "s|^ALLOWED_IPS=.*|ALLOWED_IPS=$new_ips|" "$SESSION_FILE"
+        chattr +i "$SESSION_FILE" 2>/dev/null || true
+        # Re-apply iptables with new IPs
+        reapply_iptables "$new_ips"
+    fi
+}
+
+# ============================================================================
+# MAIN LOOP
+# ============================================================================
+
+# ---- Monitor & Dashboard management ----
+
+start_monitor() {
+    if [[ "$monitor_started" == true ]]; then
+        return
+    fi
+    if [[ -f "$INSTALL_DIR/monitor/monitor.py" ]]; then
+        log "Starting behavioral monitor..."
+        # Run monitor as the real user (needs display access for screenshots)
+        local real_user
+        real_user=$(stat -c '%U' /home/*/.config/lockin 2>/dev/null | head -1)
+        if [[ -n "$real_user" ]]; then
+            sudo -u "$real_user" \
+                DISPLAY=:0 WAYLAND_DISPLAY=wayland-0 \
+                XDG_RUNTIME_DIR="/run/user/$(id -u "$real_user")" \
+                DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u "$real_user")/bus" \
+                python3 "$INSTALL_DIR/monitor/monitor.py" &
+            echo $! > "$MONITOR_PID_FILE"
+        else
+            python3 "$INSTALL_DIR/monitor/monitor.py" &
+            echo $! > "$MONITOR_PID_FILE"
+        fi
+        monitor_started=true
+    fi
+}
+
+stop_monitor() {
+    if [[ -f "$MONITOR_PID_FILE" ]]; then
+        local pid
+        pid=$(cat "$MONITOR_PID_FILE" 2>/dev/null)
+        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+            log "Stopping behavioral monitor (PID $pid)..."
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+        fi
+        rm -f "$MONITOR_PID_FILE"
+    fi
+    monitor_started=false
+}
+
+start_dashboard() {
+    if [[ -f "$DASHBOARD_PID_FILE" ]]; then
+        local pid
+        pid=$(cat "$DASHBOARD_PID_FILE" 2>/dev/null)
+        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+            return  # Already running
+        fi
+    fi
+    if [[ -f "$INSTALL_DIR/dashboard/app.py" ]]; then
+        log "Starting analytics dashboard on :9999..."
+        python3 "$INSTALL_DIR/dashboard/app.py" &
+        echo $! > "$DASHBOARD_PID_FILE"
+    fi
+}
+
+stop_dashboard() {
+    if [[ -f "$DASHBOARD_PID_FILE" ]]; then
+        local pid
+        pid=$(cat "$DASHBOARD_PID_FILE" 2>/dev/null)
+        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null || true
+        fi
+        rm -f "$DASHBOARD_PID_FILE"
+    fi
+}
+
+log "Guard daemon started"
+
+while true; do
+    # Check if session file exists
+    if [[ ! -f "$SESSION_FILE" ]]; then
+        log "No session file. Exiting."
+        stop_monitor
+        exit 0
+    fi
+
+    local_now=$(now_ts)
+    end_time=$(read_session_field END_TIME)
+
+    # Validate session data
+    if [[ -z "$end_time" ]]; then
+        log "Invalid session file. Exiting."
+        exit 1
+    fi
+
+    # Check emergency unlock
+    if [[ -f "$EMERGENCY_FILE" ]]; then
+        emer_ts=$(cat "$EMERGENCY_FILE" 2>/dev/null || echo "0")
+        if (( local_now - emer_ts >= EMERGENCY_COOLDOWN )); then
+            log "Emergency cooldown elapsed. Unlocking."
+            cleanup_and_exit
+        fi
+    fi
+
+    # Check if session expired
+    if (( local_now >= end_time )); then
+        log "Session time expired."
+        cleanup_and_exit
+    fi
+
+    # Verify all blocking layers
+    check_iptables
+    check_ipv6
+    check_hosts
+    check_chattr
+
+    # Periodic re-resolution
+    reresolve_domains
+
+    # Start monitor & dashboard if not running
+    start_monitor
+    start_dashboard
+
+    sleep 5
+done

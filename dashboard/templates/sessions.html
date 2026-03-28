@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}Sessions{% endblock %}
+
+{% block content %}
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
+    <h1 style="font-size: 20px; font-weight: 700;">Session History</h1>
+</div>
+
+{% if has_data %}
+<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px;">
+    {% for s in sessions %}
+    <a href="/session/{{ s.id }}" class="session-card">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">
+            <div>
+                <div style="font-weight: 600; font-size: 14px;">{{ s.started_at|format_date }}</div>
+                <div style="font-size: 12px; color: var(--text-dim); margin-top: 2px;">{{ s.started_at|format_time_short }} &mdash; {{ (s.started_at + s.duration_minutes * 60)|format_time_short }}</div>
+            </div>
+            {% if s.productivity_score is not none %}
+            <div style="text-align: right;">
+                <div style="font-family: var(--mono); font-size: 28px; font-weight: 700; color: {{ s.productivity_score|score_color }}; line-height: 1;">{{ s.productivity_score|round|int }}</div>
+                <div style="font-size: 10px; color: var(--text-dim); letter-spacing: 1px;">SCORE</div>
+            </div>
+            {% endif %}
+        </div>
+
+        <div style="display: flex; gap: 16px; margin-bottom: 12px;">
+            <div style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim);">
+                <span style="color: var(--accent);">&#9201;</span> {{ s.duration_minutes|format_duration }}
+            </div>
+            {% if s.focus_score is not none %}
+            <div style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim);">
+                <span style="color: var(--blue);">&#9673;</span> Focus: {{ s.focus_score|round|int }}%
+            </div>
+            {% endif %}
+            {% if s.bypass_attempts and s.bypass_attempts > 0 %}
+            <div style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--red);">
+                &#9888; {{ s.bypass_attempts }}
+            </div>
+            {% endif %}
+            {% if s.distraction_count and s.distraction_count > 0 %}
+            <div style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--yellow);">
+                &#128065; {{ s.distraction_count }}
+            </div>
+            {% endif %}
+        </div>
+
+        <div style="display: flex; flex-wrap: wrap; gap: 4px;">
+            {% for site in s.allowed_sites.split(',') %}
+            <span style="font-size: 11px; background: var(--surface-2); border: 1px solid var(--border); padding: 2px 8px; border-radius: 4px; color: var(--text-dim);">{{ site.strip() }}</span>
+            {% endfor %}
+        </div>
+
+        {% if s.ai_summary %}
+        <div style="margin-top: 12px; font-size: 12px; color: var(--text-dim); border-top: 1px solid var(--border); padding-top: 10px; line-height: 1.5;">
+            {{ s.ai_summary[:120] }}{% if s.ai_summary|length > 120 %}...{% endif %}
+        </div>
+        {% endif %}
+    </a>
+    {% endfor %}
+</div>
+
+<!-- Pagination -->
+<div style="display: flex; justify-content: center; gap: 12px; margin-top: 32px;">
+    {% if page > 1 %}
+    <a href="/sessions?page={{ page - 1 }}" style="padding: 8px 20px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; color: var(--text-dim);">&#8592; Previous</a>
+    {% endif %}
+    <span style="padding: 8px 16px; font-size: 13px; color: var(--text-dim);">Page {{ page }}</span>
+    {% if has_next %}
+    <a href="/sessions?page={{ page + 1 }}" style="padding: 8px 20px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; color: var(--text-dim);">Next &#8594;</a>
+    {% endif %}
+</div>
+
+{% else %}
+<div style="text-align: center; padding: 80px 32px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px;">
+    <div style="font-size: 48px; margin-bottom: 16px;">&#128203;</div>
+    <h2 style="font-size: 18px; margin-bottom: 8px;">No sessions recorded</h2>
+    <p style="color: var(--text-dim);">Complete your first focus session to see history here.</p>
+</div>
+{% endif %}
+
+<style>
+.session-card {
+    display: block;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    color: var(--text);
+    transition: border-color 0.15s, transform 0.15s;
+}
+.session-card:hover {
+    border-color: var(--accent);
+    transform: translateY(-2px);
+    color: var(--text);
+}
+</style>
+{% endblock %}

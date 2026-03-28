@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Blocked - Lock In</title>
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Segoe UI', -apple-system, sans-serif;
+      background: #0a0a0b;
+      color: #e4e4e7;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      overflow: hidden;
+      user-select: none;
+    }
+
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(249,115,22,0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(249,115,22,0.03) 1px, transparent 1px);
+      background-size: 60px 60px;
+      animation: gridMove 20s linear infinite;
+    }
+
+    @keyframes gridMove {
+      0% { transform: translate(0, 0); }
+      100% { transform: translate(60px, 60px); }
+    }
+
+    .container {
+      position: relative;
+      z-index: 1;
+      max-width: 480px;
+      padding: 40px;
+    }
+
+    .lock-icon {
+      font-size: 72px;
+      margin-bottom: 24px;
+      display: inline-block;
+      animation: shake 0.5s ease-in-out;
+    }
+
+    @keyframes shake {
+      0%, 100% { transform: rotate(0); }
+      25% { transform: rotate(-10deg); }
+      75% { transform: rotate(10deg); }
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.6; }
+    }
+
+    h1 {
+      font-size: 36px;
+      font-weight: 800;
+      margin-bottom: 12px;
+      letter-spacing: -0.5px;
+    }
+
+    .message {
+      font-size: 16px;
+      color: #71717a;
+      line-height: 1.6;
+      margin-bottom: 32px;
+    }
+
+    .blocked-url {
+      font-size: 13px;
+      color: #71717a;
+      background: #111113;
+      border: 1px solid #2a2a2e;
+      padding: 10px 16px;
+      border-radius: 8px;
+      margin-bottom: 32px;
+      word-break: break-all;
+      display: inline-block;
+      max-width: 100%;
+    }
+
+    .timer-container {
+      margin-bottom: 32px;
+    }
+
+    .timer {
+      font-family: 'Courier New', monospace;
+      font-size: 56px;
+      font-weight: 700;
+      color: #f97316;
+      letter-spacing: -2px;
+      animation: pulse 3s ease-in-out infinite;
+    }
+
+    .timer-label {
+      font-size: 12px;
+      color: #71717a;
+      text-transform: uppercase;
+      letter-spacing: 3px;
+      margin-top: 4px;
+    }
+
+    .fortified {
+      font-size: 11px;
+      color: #3f3f46;
+      text-transform: uppercase;
+      letter-spacing: 4px;
+      margin-bottom: 24px;
+      padding: 8px 16px;
+      border: 1px solid #1a1a1e;
+      border-radius: 6px;
+      display: inline-block;
+    }
+
+    .quotes {
+      font-size: 14px;
+      color: #52525b;
+      font-style: italic;
+      line-height: 1.6;
+    }
+
+    .quote-attr {
+      font-style: normal;
+      color: #3f3f46;
+      margin-top: 8px;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <div class="lock-icon">&#128274;</div>
+    <h1>You're locked in.</h1>
+    <p class="message">This site is blocked. There is no way around it.<br>Get back to work.</p>
+
+    <div class="blocked-url" id="blockedUrl"></div>
+
+    <div class="timer-container">
+      <div class="timer" id="timer">--:--</div>
+      <div class="timer-label">remaining</div>
+    </div>
+
+    <div class="fortified">System-level block active</div>
+
+    <div class="quotes" id="quote"></div>
+  </div>
+
+  <script>
+    const quotes = [
+      { text: "The successful warrior is the average man, with laser-like focus.", attr: "Bruce Lee" },
+      { text: "It's not that I'm so smart, it's just that I stay with problems longer.", attr: "Albert Einstein" },
+      { text: "Discipline is choosing between what you want now and what you want most.", attr: "Abraham Lincoln" },
+      { text: "You will never always be motivated. You have to learn to be disciplined.", attr: "" },
+      { text: "The secret of getting ahead is getting started.", attr: "Mark Twain" },
+      { text: "Focus on being productive instead of busy.", attr: "Tim Ferriss" },
+      { text: "Lock in. The work won't do itself.", attr: "" },
+      { text: "Your future self will thank you.", attr: "" },
+      { text: "Hard work beats talent when talent doesn't work hard.", attr: "Tim Notke" },
+      { text: "Don't watch the clock; do what it does. Keep going.", attr: "Sam Levenson" },
+      { text: "The pain of discipline is nothing like the pain of disappointment.", attr: "" },
+      { text: "What you do today can improve all your tomorrows.", attr: "Ralph Marston" },
+      { text: "Small disciplines repeated with consistency every day lead to great achievements gained slowly over time.", attr: "John C. Maxwell" },
+    ];
+
+    // Show blocked URL
+    const params = new URLSearchParams(window.location.search);
+    const url = params.get('url');
+    if (url) {
+      try {
+        document.getElementById('blockedUrl').textContent = new URL(url).hostname;
+      } catch {
+        document.getElementById('blockedUrl').textContent = url;
+      }
+    }
+
+    // Random quote
+    const q = quotes[Math.floor(Math.random() * quotes.length)];
+    document.getElementById('quote').innerHTML =
+      `"${q.text}"${q.attr ? `<div class="quote-attr">\u2014 ${q.attr}</div>` : ''}`;
+
+    // Timer
+    const timerEl = document.getElementById('timer');
+
+    function updateTimer() {
+      chrome.runtime.sendMessage({ type: 'GET_STATUS' }, (res) => {
+        if (!res || !res.active) {
+          timerEl.textContent = '00:00';
+          // Session ended — redirect back after a moment
+          setTimeout(() => {
+            if (url) window.location.href = url;
+          }, 1500);
+          return;
+        }
+        const remaining = Math.ceil(res.remainingMs / 1000);
+        const m = Math.floor(remaining / 60);
+        const s = remaining % 60;
+        timerEl.textContent = `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+      });
+    }
+
+    updateTimer();
+    setInterval(updateTimer, 1000);
+
+    // Prevent back navigation
+    history.pushState(null, '', window.location.href);
+    window.addEventListener('popstate', () => {
+      history.pushState(null, '', window.location.href);
+    });
+
+    // Prevent right-click and dev tools shortcuts
+    document.addEventListener('contextmenu', e => e.preventDefault());
+    document.addEventListener('keydown', e => {
+      // Block F12, Ctrl+Shift+I, Ctrl+Shift+J, Ctrl+U
+      if (e.key === 'F12' ||
+          (e.ctrlKey && e.shiftKey && (e.key === 'I' || e.key === 'J')) ||
+          (e.ctrlKey && e.key === 'u')) {
+        e.preventDefault();
+      }
+    });
+  </script>
+</body>
+</html>

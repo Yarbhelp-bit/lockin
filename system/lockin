@@ -1,0 +1,561 @@
+#!/usr/bin/env bash
+# ============================================================================
+# LOCK IN — System-level focus lock
+# Blocks ALL internet except whitelisted sites using iptables + /etc/hosts
+# Survives browser switching, extension removal, and casual tampering
+# ============================================================================
+set -euo pipefail
+
+LOCKIN_DIR="/etc/lockin"
+SESSION_FILE="$LOCKIN_DIR/session"
+EMERGENCY_FILE="$LOCKIN_DIR/emergency"
+LOG_FILE="$LOCKIN_DIR/log"
+HOSTS_MARKER_START="# === LOCKIN_START ==="
+HOSTS_MARKER_END="# === LOCKIN_END ==="
+CHAIN="LOCKIN"
+MAX_MINUTES=240
+EMERGENCY_COOLDOWN=600  # 10 minutes
+
+RED='\033[0;31m'
+ORANGE='\033[0;33m'
+GREEN='\033[0;32m'
+BOLD='\033[1m'
+DIM='\033[2m'
+NC='\033[0m'
+
+# ---- Helpers ----
+
+die() { echo -e "${RED}Error:${NC} $1" >&2; exit 1; }
+
+require_root() {
+    [[ $EUID -eq 0 ]] || die "This command requires root. Run: sudo lockin $*"
+}
+
+now_ts() { date +%s; }
+
+resolve_domain() {
+    local domain="$1"
+    local ips=""
+    # Resolve A records
+    ips+=$(dig +short A "$domain" 2>/dev/null | grep -E '^[0-9]+\.' || true)
+    ips+=$'\n'
+    # Also resolve www variant
+    ips+=$(dig +short A "www.$domain" 2>/dev/null | grep -E '^[0-9]+\.' || true)
+    ips+=$'\n'
+    # Follow CNAMEs
+    local cnames
+    cnames=$(dig +short CNAME "$domain" 2>/dev/null | head -5)
+    for cname in $cnames; do
+        ips+=$(dig +short A "$cname" 2>/dev/null | grep -E '^[0-9]+\.' || true)
+        ips+=$'\n'
+    done
+    echo "$ips" | sort -u | grep -v '^$' || true
+}
+
+resolve_all_domains() {
+    local domains="$1"
+    local all_ips=""
+    IFS=',' read -ra dom_arr <<< "$domains"
+    for d in "${dom_arr[@]}"; do
+        all_ips+=$(resolve_domain "$d")
+        all_ips+=$'\n'
+    done
+    echo "$all_ips" | sort -u | grep -v '^$' || true
+}
+
+session_active() {
+    [[ -f "$SESSION_FILE" ]] || return 1
+    local end_time
+    end_time=$(grep '^END_TIME=' "$SESSION_FILE" 2>/dev/null | cut -d= -f2)
+    [[ -n "$end_time" ]] || return 1
+    [[ $(now_ts) -lt "$end_time" ]] || return 1
+    return 0
+}
+
+read_session_field() {
+    grep "^$1=" "$SESSION_FILE" 2>/dev/null | cut -d= -f2
+}
+
+# ---- Distracting domains list (hosts file layer) ----
+
+DISTRACTION_DOMAINS="
+facebook.com www.facebook.com m.facebook.com
+instagram.com www.instagram.com
+twitter.com www.twitter.com x.com www.x.com mobile.twitter.com
+tiktok.com www.tiktok.com
+snapchat.com www.snapchat.com
+reddit.com www.reddit.com old.reddit.com i.reddit.com
+youtube.com www.youtube.com m.youtube.com youtu.be
+netflix.com www.netflix.com
+twitch.tv www.twitch.tv
+hulu.com www.hulu.com
+disneyplus.com www.disneyplus.com
+pinterest.com www.pinterest.com
+tumblr.com www.tumblr.com
+linkedin.com www.linkedin.com
+discord.com www.discord.com discordapp.com
+9gag.com www.9gag.com
+imgur.com www.imgur.com i.imgur.com
+buzzfeed.com www.buzzfeed.com
+dailymotion.com www.dailymotion.com
+vimeo.com www.vimeo.com
+store.steampowered.com
+epicgames.com www.epicgames.com
+roblox.com www.roblox.com
+ebay.com www.ebay.com
+wish.com www.wish.com
+aliexpress.com www.aliexpress.com
+news.ycombinator.com
+"
+
+# ---- iptables rules ----
+
+apply_iptables() {
+    local allowed_ips="$1"
+    local cmd="$2"  # iptables or ip6tables
+
+    # Clean up existing chain
+    $cmd -D OUTPUT -j "$CHAIN" 2>/dev/null || true
+    $cmd -F "$CHAIN" 2>/dev/null || true
+    $cmd -X "$CHAIN" 2>/dev/null || true
+
+    # Create chain
+    $cmd -N "$CHAIN"
+
+    # Allow loopback
+    $cmd -A "$CHAIN" -o lo -j ACCEPT
+
+    # Allow local network
+    if [[ "$cmd" == "iptables" ]]; then
+        $cmd -A "$CHAIN" -d 127.0.0.0/8 -j ACCEPT
+        $cmd -A "$CHAIN" -d 192.168.0.0/16 -j ACCEPT
+        $cmd -A "$CHAIN" -d 10.0.0.0/8 -j ACCEPT
+        $cmd -A "$CHAIN" -d 172.16.0.0/12 -j ACCEPT
+        $cmd -A "$CHAIN" -d 169.254.0.0/16 -j ACCEPT
+
+        # Allow DNS to system resolver only
+        $cmd -A "$CHAIN" -d 127.0.0.53 -p udp --dport 53 -j ACCEPT
+        $cmd -A "$CHAIN" -d 127.0.0.53 -p tcp --dport 53 -j ACCEPT
+
+        # Block known DoH providers BEFORE whitelist
+        for doh_ip in 8.8.8.8 8.8.4.4 1.1.1.1 1.0.0.1 9.9.9.9 149.112.112.112 208.67.222.222 208.67.220.220; do
+            $cmd -A "$CHAIN" -d "$doh_ip" -p tcp --dport 443 -j DROP
+            $cmd -A "$CHAIN" -d "$doh_ip" -p udp --dport 443 -j DROP
+        done
+    else
+        # IPv6 local
+        $cmd -A "$CHAIN" -d ::1/128 -j ACCEPT
+        $cmd -A "$CHAIN" -d fe80::/10 -j ACCEPT
+    fi
+
+    # Block DNS-over-TLS
+    $cmd -A "$CHAIN" -p tcp --dport 853 -j DROP
+    $cmd -A "$CHAIN" -p udp --dport 853 -j DROP
+
+    # Allow whitelisted IPs on HTTP/HTTPS/QUIC
+    if [[ "$cmd" == "iptables" ]]; then
+        for ip in $allowed_ips; do
+            # Skip if not a valid IPv4
+            [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+            $cmd -A "$CHAIN" -d "$ip" -p tcp --dport 80 -j ACCEPT
+            $cmd -A "$CHAIN" -d "$ip" -p tcp --dport 443 -j ACCEPT
+            $cmd -A "$CHAIN" -d "$ip" -p udp --dport 443 -j ACCEPT
+        done
+    fi
+
+    # Block all HTTP/HTTPS/QUIC
+    $cmd -A "$CHAIN" -p tcp --dport 80 -j DROP
+    $cmd -A "$CHAIN" -p tcp --dport 443 -j DROP
+    $cmd -A "$CHAIN" -p udp --dport 443 -j DROP
+    $cmd -A "$CHAIN" -p tcp --dport 8080 -j DROP
+    $cmd -A "$CHAIN" -p tcp --dport 8443 -j DROP
+
+    # Block VPN/proxy/tunnel ports
+    for port in 1080 1194 3128 9050 9150 51820 4500 500; do
+        $cmd -A "$CHAIN" -p tcp --dport "$port" -j DROP
+        $cmd -A "$CHAIN" -p udp --dport "$port" -j DROP
+    done
+
+    # Attach chain to OUTPUT
+    $cmd -I OUTPUT 1 -j "$CHAIN"
+}
+
+remove_iptables() {
+    local cmd="$1"
+    $cmd -D OUTPUT -j "$CHAIN" 2>/dev/null || true
+    $cmd -F "$CHAIN" 2>/dev/null || true
+    $cmd -X "$CHAIN" 2>/dev/null || true
+}
+
+# ---- /etc/hosts management ----
+
+apply_hosts_blocks() {
+    local allowed_domains="$1"
+    IFS=',' read -ra allowed_arr <<< "$allowed_domains"
+
+    # Remove immutable flag
+    chattr -i /etc/hosts 2>/dev/null || true
+
+    # Remove old blocks
+    if grep -q "$HOSTS_MARKER_START" /etc/hosts 2>/dev/null; then
+        sed -i "/$HOSTS_MARKER_START/,/$HOSTS_MARKER_END/d" /etc/hosts
+    fi
+
+    # Build block list (skip allowed domains)
+    local block_lines="$HOSTS_MARKER_START"$'\n'
+    for domain in $DISTRACTION_DOMAINS; do
+        domain=$(echo "$domain" | xargs)
+        [[ -z "$domain" ]] && continue
+        local skip=false
+        for allowed in "${allowed_arr[@]}"; do
+            if [[ "$domain" == "$allowed" || "$domain" == "www.$allowed" || "$domain" == *".$allowed" ]]; then
+                skip=true
+                break
+            fi
+        done
+        if [[ "$skip" == false ]]; then
+            block_lines+="127.0.0.1 $domain"$'\n'
+        fi
+    done
+    block_lines+="$HOSTS_MARKER_END"
+
+    echo "$block_lines" >> /etc/hosts
+
+    # Lock it down
+    chattr +i /etc/hosts
+}
+
+remove_hosts_blocks() {
+    chattr -i /etc/hosts 2>/dev/null || true
+    if grep -q "$HOSTS_MARKER_START" /etc/hosts 2>/dev/null; then
+        sed -i "/$HOSTS_MARKER_START/,/$HOSTS_MARKER_END/d" /etc/hosts
+    fi
+}
+
+# ---- Disable IPv6 ----
+
+disable_ipv6() {
+    sysctl -q -w net.ipv6.conf.all.disable_ipv6=1
+    sysctl -q -w net.ipv6.conf.default.disable_ipv6=1
+}
+
+enable_ipv6() {
+    sysctl -q -w net.ipv6.conf.all.disable_ipv6=0
+    sysctl -q -w net.ipv6.conf.default.disable_ipv6=0
+}
+
+# ---- Protect binaries ----
+
+protect_files() {
+    chattr +i /etc/hosts 2>/dev/null || true
+    chattr +i "$SESSION_FILE" 2>/dev/null || true
+    chattr +i /usr/local/bin/lockin 2>/dev/null || true
+    chattr +i /usr/local/bin/lockin-guard 2>/dev/null || true
+    chattr +i /etc/systemd/system/lockin-guard.service 2>/dev/null || true
+}
+
+unprotect_files() {
+    chattr -i /etc/hosts 2>/dev/null || true
+    chattr -i "$SESSION_FILE" 2>/dev/null || true
+    chattr -i "$EMERGENCY_FILE" 2>/dev/null || true
+    chattr -i /usr/local/bin/lockin 2>/dev/null || true
+    chattr -i /usr/local/bin/lockin-guard 2>/dev/null || true
+    chattr -i /etc/systemd/system/lockin-guard.service 2>/dev/null || true
+}
+
+# ============================================================================
+# COMMANDS
+# ============================================================================
+
+cmd_start() {
+    require_root "start" "$@"
+
+    local minutes="${1:-}"
+    shift || true
+    local sites=("$@")
+
+    # Validate
+    [[ -n "$minutes" ]] || die "Usage: sudo lockin start <minutes> <site1> [site2] ..."
+    [[ "$minutes" =~ ^[0-9]+$ ]] || die "Minutes must be a number"
+    [[ "$minutes" -ge 1 && "$minutes" -le "$MAX_MINUTES" ]] || die "Duration must be 1-$MAX_MINUTES minutes"
+    [[ ${#sites[@]} -gt 0 ]] || die "Specify at least one allowed site (e.g. github.com)"
+
+    # Check for existing session
+    if session_active; then
+        local end_time
+        end_time=$(read_session_field END_TIME)
+        local remaining=$(( end_time - $(now_ts) ))
+        local rm=$(( remaining / 60 ))
+        local rs=$(( remaining % 60 ))
+        die "Session already active. ${rm}m ${rs}s remaining. No shortcuts."
+    fi
+
+    # Clean up any stale session
+    unprotect_files
+    rm -f "$SESSION_FILE" "$EMERGENCY_FILE"
+
+    # Create state directory
+    mkdir -p "$LOCKIN_DIR"
+
+    # Join domains
+    local domains_csv
+    domains_csv=$(IFS=','; echo "${sites[*]}")
+
+    echo -e "${ORANGE}${BOLD}LOCK IN${NC} — Starting ${minutes}-minute focus session"
+    echo -e "${DIM}Allowed sites: ${domains_csv}${NC}"
+    echo ""
+
+    # Resolve domains
+    echo -e "  Resolving domains..."
+    local allowed_ips
+    allowed_ips=$(resolve_all_domains "$domains_csv")
+    local ip_count
+    ip_count=$(echo "$allowed_ips" | wc -l)
+    echo -e "  Resolved ${ip_count} IPs for allowed domains"
+
+    # Apply iptables (IPv4)
+    echo -e "  Applying firewall rules..."
+    apply_iptables "$allowed_ips" "iptables"
+
+    # Disable IPv6 (simplest way to prevent IPv6 bypass)
+    echo -e "  Disabling IPv6..."
+    disable_ipv6
+
+    # Apply hosts file blocks
+    echo -e "  Blocking distracting domains in /etc/hosts..."
+    apply_hosts_blocks "$domains_csv"
+
+    # Write session file
+    local end_time=$(( $(now_ts) + minutes * 60 ))
+    cat > "$SESSION_FILE" <<EOF
+END_TIME=$end_time
+ALLOWED_DOMAINS=$domains_csv
+ALLOWED_IPS=$(echo "$allowed_ips" | tr '\n' ',' | sed 's/,$//')
+STARTED_AT=$(now_ts)
+DURATION_MINUTES=$minutes
+EOF
+    chattr +i "$SESSION_FILE"
+
+    # Protect binaries
+    protect_files
+
+    # Start guard daemon
+    echo -e "  Starting guard daemon..."
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl start lockin-guard.service 2>/dev/null || true
+
+    # Log
+    echo "[$(date)] Session started: ${minutes}m, allowed: ${domains_csv}" >> "$LOG_FILE"
+
+    echo ""
+    echo -e "${GREEN}${BOLD}  LOCKED IN.${NC}"
+    echo -e "  Duration: ${minutes} minutes"
+    echo -e "  Ends at:  $(date -d "@$end_time" '+%H:%M:%S')"
+    echo ""
+    echo -e "${DIM}  Everything is blocked except: ${domains_csv}"
+    echo -e "  This affects ALL browsers and apps."
+    echo -e "  Emergency unlock: sudo lockin emergency (10-min cooldown)${NC}"
+    echo ""
+}
+
+cmd_status() {
+    if ! [[ -f "$SESSION_FILE" ]]; then
+        echo -e "${DIM}No active session.${NC}"
+        echo -e "Start one: ${BOLD}sudo lockin start <minutes> <site1> [site2] ...${NC}"
+        return 0
+    fi
+
+    # Read session (may need to temporarily remove chattr for reading)
+    local end_time started_at domains duration
+    end_time=$(read_session_field END_TIME)
+    started_at=$(read_session_field STARTED_AT)
+    domains=$(read_session_field ALLOWED_DOMAINS)
+    duration=$(read_session_field DURATION_MINUTES)
+
+    local now
+    now=$(now_ts)
+
+    if [[ "$now" -ge "$end_time" ]]; then
+        echo -e "${DIM}Session expired. Waiting for guard to clean up...${NC}"
+        return 0
+    fi
+
+    local remaining=$(( end_time - now ))
+    local rm=$(( remaining / 60 ))
+    local rs=$(( remaining % 60 ))
+    local elapsed=$(( now - started_at ))
+    local em=$(( elapsed / 60 ))
+    local progress=$(( (elapsed * 100) / (duration * 60) ))
+
+    echo ""
+    echo -e "  ${ORANGE}${BOLD}LOCKED IN${NC}"
+    echo ""
+    echo -e "  Remaining:  ${BOLD}${rm}m ${rs}s${NC}"
+    echo -e "  Elapsed:    ${em}m / ${duration}m"
+    echo -e "  Ends at:    $(date -d "@$end_time" '+%H:%M:%S')"
+    echo -e "  Allowed:    ${domains}"
+    echo ""
+
+    # Progress bar
+    local bar_width=40
+    local filled=$(( progress * bar_width / 100 ))
+    local empty=$(( bar_width - filled ))
+    printf "  ["
+    printf "${ORANGE}"
+    for ((i=0; i<filled; i++)); do printf "#"; done
+    printf "${NC}"
+    for ((i=0; i<empty; i++)); do printf "."; done
+    printf "] %d%%\n" "$progress"
+
+    # Check guard status
+    echo ""
+    if systemctl is-active --quiet lockin-guard.service 2>/dev/null; then
+        echo -e "  Guard: ${GREEN}active${NC}"
+    else
+        echo -e "  Guard: ${RED}inactive${NC} (restarting...)"
+        systemctl start lockin-guard.service 2>/dev/null || true
+    fi
+
+    # Check if emergency pending
+    if [[ -f "$EMERGENCY_FILE" ]]; then
+        local emer_ts
+        emer_ts=$(cat "$EMERGENCY_FILE" 2>/dev/null || echo "0")
+        local emer_remaining=$(( (emer_ts + EMERGENCY_COOLDOWN) - now ))
+        if [[ "$emer_remaining" -gt 0 ]]; then
+            local erm=$(( emer_remaining / 60 ))
+            local ers=$(( emer_remaining % 60 ))
+            echo -e "  Emergency: ${RED}pending (${erm}m ${ers}s cooldown)${NC}"
+        fi
+    fi
+    echo ""
+}
+
+cmd_emergency() {
+    require_root "emergency"
+
+    if ! session_active; then
+        echo -e "${DIM}No active session.${NC}"
+        return 0
+    fi
+
+    # Check if emergency already pending
+    if [[ -f "$EMERGENCY_FILE" ]]; then
+        local emer_ts
+        emer_ts=$(cat "$EMERGENCY_FILE" 2>/dev/null || echo "0")
+        local now
+        now=$(now_ts)
+        local emer_remaining=$(( (emer_ts + EMERGENCY_COOLDOWN) - now ))
+        if [[ "$emer_remaining" -gt 0 ]]; then
+            echo -e "${ORANGE}Emergency unlock already requested.${NC}"
+            echo -e "Cooldown remaining: $(( emer_remaining / 60 ))m $(( emer_remaining % 60 ))s"
+            echo "The guard daemon will unlock when the cooldown expires."
+            return 0
+        fi
+    fi
+
+    echo ""
+    echo -e "${RED}${BOLD}  EMERGENCY UNLOCK${NC}"
+    echo ""
+    echo -e "  This will end your focus session early."
+    echo -e "  A ${BOLD}10-minute cooldown${NC} is required to prevent impulse unlocking."
+    echo ""
+    read -p "  Are you sure? Type 'unlock' to confirm: " confirm
+    [[ "$confirm" == "unlock" ]] || { echo -e "${DIM}Cancelled.${NC}"; return 0; }
+
+    # Write emergency timestamp
+    chattr -i "$EMERGENCY_FILE" 2>/dev/null || true
+    echo "$(now_ts)" > "$EMERGENCY_FILE"
+    chattr +i "$EMERGENCY_FILE"
+
+    echo "[$(date)] Emergency unlock requested" >> "$LOG_FILE"
+
+    echo ""
+    echo -e "  ${ORANGE}Emergency unlock requested.${NC}"
+    echo -e "  The guard daemon will unlock in 10 minutes."
+    echo -e "  Go for a walk. Drink water. Come back."
+    echo ""
+
+    # Show countdown
+    local end_ts=$(( $(now_ts) + EMERGENCY_COOLDOWN ))
+    while true; do
+        local now
+        now=$(now_ts)
+        local remaining=$(( end_ts - now ))
+        if [[ "$remaining" -le 0 ]]; then
+            break
+        fi
+        local rm=$(( remaining / 60 ))
+        local rs=$(( remaining % 60 ))
+        printf "\r  Cooldown: ${BOLD}%02d:%02d${NC}  " "$rm" "$rs"
+        sleep 1
+    done
+
+    echo ""
+    echo -e "  ${GREEN}Cooldown complete. Guard is unlocking...${NC}"
+    echo ""
+}
+
+# Internal: called by guard to clean up
+cmd_cleanup() {
+    require_root "_cleanup"
+
+    unprotect_files
+
+    # Remove iptables rules
+    remove_iptables "iptables"
+    remove_iptables "ip6tables" 2>/dev/null || true
+
+    # Re-enable IPv6
+    enable_ipv6
+
+    # Remove hosts blocks
+    remove_hosts_blocks
+
+    # Remove session files
+    rm -f "$SESSION_FILE" "$EMERGENCY_FILE"
+
+    echo "[$(date)] Session ended (cleanup)" >> "$LOG_FILE"
+}
+
+cmd_help() {
+    echo ""
+    echo -e "${ORANGE}${BOLD}LOCK IN${NC} — Unbypassable focus lock"
+    echo ""
+    echo -e "  ${BOLD}sudo lockin start <minutes> <site1> [site2] ...${NC}"
+    echo -e "       Start a focus session. Only listed sites will be accessible."
+    echo -e "       Blocks at OS level — affects ALL browsers and apps."
+    echo -e "       Max duration: ${MAX_MINUTES} minutes."
+    echo ""
+    echo -e "  ${BOLD}lockin status${NC}"
+    echo -e "       Show remaining time and session details."
+    echo ""
+    echo -e "  ${BOLD}sudo lockin emergency${NC}"
+    echo -e "       Emergency unlock with 10-minute cooldown."
+    echo -e "       For genuine emergencies only."
+    echo ""
+    echo -e "  ${DIM}Examples:"
+    echo -e "    sudo lockin start 25 github.com stackoverflow.com"
+    echo -e "    sudo lockin start 60 docs.google.com notion.so"
+    echo -e "    sudo lockin start 90 github.com${NC}"
+    echo ""
+}
+
+# ---- Main ----
+
+cmd_apply_hosts() {
+    # Internal: called by guard to re-apply hosts blocks
+    require_root "_apply_hosts"
+    local domains="${1:-}"
+    [[ -n "$domains" ]] || return 0
+    apply_hosts_blocks "$domains"
+}
+
+case "${1:-help}" in
+    start)     shift; cmd_start "$@" ;;
+    status)    cmd_status ;;
+    emergency) cmd_emergency ;;
+    _cleanup)  cmd_cleanup ;;
+    _apply_hosts) shift; cmd_apply_hosts "$@" ;;
+    help|--help|-h) cmd_help ;;
+    *)         die "Unknown command: $1. Run 'lockin help' for usage." ;;
+esac

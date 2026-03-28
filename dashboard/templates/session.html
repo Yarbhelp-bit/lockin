@@ -1,0 +1,194 @@
+{% extends "base.html" %}
+{% block title %}Session #{{ session.id if session else '' }}{% endblock %}
+
+{% block content %}
+{% if session %}
+<!-- Header -->
+<div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 24px;">
+    <div>
+        <a href="/sessions" style="font-size: 12px; color: var(--text-dim);">&#8592; All Sessions</a>
+        <h1 style="font-size: 20px; font-weight: 700; margin-top: 8px;">{{ session.started_at|format_date }}</h1>
+        <div style="font-size: 13px; color: var(--text-dim); margin-top: 4px;">
+            {{ session.started_at|format_time_short }}
+            {% if session.ended_at %} &mdash; {{ session.ended_at|format_time_short }}{% endif %}
+            &middot; {{ session.duration_minutes|format_duration }}
+            &middot; {{ session.allowed_sites }}
+        </div>
+    </div>
+    {% if session.productivity_score is not none %}
+    <div style="text-align: center; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 24px;">
+        <div style="font-family: var(--mono); font-size: 40px; font-weight: 700; color: {{ session.productivity_score|score_color }}; line-height: 1;">{{ session.productivity_score|round|int }}</div>
+        <div style="font-size: 10px; color: var(--text-dim); letter-spacing: 2px; margin-top: 4px;">PRODUCTIVITY</div>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Score cards -->
+<div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 24px;">
+    <div class="stat-card">
+        <div class="stat-value" style="color: var(--accent);">{{ session.duration_minutes|format_duration }}</div>
+        <div class="stat-label">DURATION</div>
+    </div>
+    <div class="stat-card">
+        {% if session.focus_score is not none %}
+        <div class="stat-value" style="color: {{ session.focus_score|score_color }};">{{ session.focus_score|round|int }}%</div>
+        {% else %}
+        <div class="stat-value" style="color: var(--text-dim);">--</div>
+        {% endif %}
+        <div class="stat-label">FOCUS</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value" style="color: {% if session.bypass_attempts %}var(--red){% else %}var(--green){% endif %};">{{ session.bypass_attempts or 0 }}</div>
+        <div class="stat-label">BYPASS ATTEMPTS</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value" style="color: {% if session.distraction_count %}var(--yellow){% else %}var(--green){% endif %};">{{ session.distraction_count or 0 }}</div>
+        <div class="stat-label">DISTRACTIONS</div>
+    </div>
+</div>
+
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px;">
+    <!-- Window usage breakdown -->
+    <div class="card">
+        <h3 style="font-size: 12px; color: var(--text-dim); letter-spacing: 2px; margin-bottom: 16px;">APP USAGE BREAKDOWN</h3>
+        {% if window_breakdown %}
+        {% set max_dur = window_breakdown[0].total_seconds if window_breakdown else 1 %}
+        {% for w in window_breakdown[:10] %}
+        <div style="margin-bottom: 10px;">
+            <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px;">
+                <span style="{% if not w.is_productive %}color: var(--red);{% endif %}">{{ w.app_name }}</span>
+                <span style="color: var(--text-dim); font-family: var(--mono);">{{ (w.total_seconds // 60) }}m {{ (w.total_seconds % 60) }}s</span>
+            </div>
+            <div style="background: var(--surface-2); border-radius: 3px; height: 4px; overflow: hidden;">
+                <div style="height: 100%; border-radius: 3px; width: {{ (w.total_seconds / max_dur * 100)|round }}%; background: {% if w.is_productive %}var(--green){% else %}var(--red){% endif %};"></div>
+            </div>
+        </div>
+        {% endfor %}
+        {% else %}
+        <div style="text-align: center; padding: 24px; color: var(--text-dim); font-size: 13px;">No window data recorded</div>
+        {% endif %}
+    </div>
+
+    <!-- Typing activity chart -->
+    <div class="card">
+        <h3 style="font-size: 12px; color: var(--text-dim); letter-spacing: 2px; margin-bottom: 16px;">TYPING ACTIVITY</h3>
+        {% if keystrokes %}
+        <canvas id="keystrokeChart" height="200"></canvas>
+        {% else %}
+        <div style="text-align: center; padding: 24px; color: var(--text-dim); font-size: 13px;">No keystroke data recorded</div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Screenshot filmstrip -->
+{% if screenshots %}
+<div class="card" style="margin-bottom: 24px;">
+    <h3 style="font-size: 12px; color: var(--text-dim); letter-spacing: 2px; margin-bottom: 16px;">SCREENSHOTS ({{ screenshots|length }})</h3>
+    <div style="display: flex; gap: 8px; overflow-x: auto; padding-bottom: 8px;">
+        {% for ss in screenshots %}
+        <div style="flex-shrink: 0; cursor: pointer;" onclick="this.querySelector('img').requestFullscreen()">
+            <img src="/screenshot/{{ ss.filepath.split('/')[-1] }}" alt="Screenshot" loading="lazy"
+                 style="width: 200px; height: 120px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); {% if ss.flagged %}border-color: var(--red);{% endif %} transition: transform 0.15s;"
+                 onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
+            <div style="font-size: 10px; color: var(--text-dim); margin-top: 4px; text-align: center;">
+                {{ ss.timestamp|format_time_short }}
+                {% if ss.flagged %}<span style="color: var(--red);"> &#9888; {{ ss.flag_reason }}</span>{% endif %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+<!-- Activity timeline -->
+<div class="card" style="margin-bottom: 24px;">
+    <h3 style="font-size: 12px; color: var(--text-dim); letter-spacing: 2px; margin-bottom: 16px;">ACTIVITY TIMELINE ({{ activity|length }} events)</h3>
+    {% if activity %}
+    <div style="position: relative; padding-left: 24px;">
+        <div style="position: absolute; left: 8px; top: 0; bottom: 0; width: 2px; background: var(--border);"></div>
+        {% for act in activity %}
+        <div style="position: relative; padding: 8px 0; display: flex; align-items: flex-start; gap: 12px;">
+            <div style="position: absolute; left: -20px; width: 12px; height: 12px; border-radius: 50%; background: {{ act.event_type|event_type_color }}; border: 2px solid var(--bg); z-index: 1; margin-top: 4px;"></div>
+            <div style="flex: 1;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span style="font-size: 12px; font-weight: 600; color: {{ act.event_type|event_type_color }};">{{ act.event_type|event_type_label }}</span>
+                    <span style="font-size: 11px; color: var(--text-muted); font-family: var(--mono);">{{ act.timestamp|format_time_short }}</span>
+                </div>
+                {% if act.parsed_data %}
+                <div style="font-size: 11px; color: var(--text-dim); margin-top: 2px;">
+                    {% if act.parsed_data is mapping %}
+                        {% for k, v in act.parsed_data.items() %}
+                            {{ k }}: {{ v }}{% if not loop.last %}, {% endif %}
+                        {% endfor %}
+                    {% else %}
+                        {{ act.parsed_data }}
+                    {% endif %}
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div style="text-align: center; padding: 24px; color: var(--text-dim); font-size: 13px;">No activity events recorded</div>
+    {% endif %}
+</div>
+
+<!-- AI Summary -->
+{% if session.ai_summary %}
+<div class="card" style="border-color: var(--accent);">
+    <h3 style="font-size: 12px; color: var(--accent); letter-spacing: 2px; margin-bottom: 12px;">&#9733; AI SESSION ANALYSIS</h3>
+    <div style="font-size: 14px; line-height: 1.7; color: var(--text); white-space: pre-wrap;">{{ session.ai_summary }}</div>
+</div>
+{% endif %}
+
+{% else %}
+<div style="text-align: center; padding: 80px 32px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px;">
+    <h2 style="font-size: 18px; margin-bottom: 8px;">Session not found</h2>
+    <a href="/sessions">Back to sessions</a>
+</div>
+{% endif %}
+
+<style>
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+.stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; text-align: center; }
+.stat-value { font-family: var(--mono); font-size: 24px; font-weight: 700; }
+.stat-label { font-size: 10px; color: var(--text-dim); letter-spacing: 2px; margin-top: 4px; }
+</style>
+{% endblock %}
+
+{% block scripts %}
+{% if keystrokes %}
+<script>
+const ksData = {{ keystrokes|tojson }};
+const ksLabels = ksData.map(k => {
+    const d = new Date(k.timestamp * 1000);
+    return d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0');
+});
+const ksCounts = ksData.map(k => k.keypress_count);
+new Chart('keystrokeChart', {
+    type: 'line',
+    data: {
+        labels: ksLabels,
+        datasets: [{
+            data: ksCounts,
+            borderColor: '#3b82f6',
+            backgroundColor: 'rgba(59,130,246,0.1)',
+            fill: true,
+            tension: 0.3,
+            pointRadius: 2,
+            pointBackgroundColor: '#3b82f6'
+        }]
+    },
+    options: {
+        responsive: true,
+        plugins: { legend: { display: false } },
+        scales: {
+            x: { grid: { color: '#1a1a1e' }, ticks: { color: '#52525b', font: { size: 10 }, maxTicksLimit: 10 }},
+            y: { grid: { color: '#1a1a1e' }, ticks: { color: '#52525b', font: { size: 10 }}, title: { display: true, text: 'Keypresses/min', color: '#52525b', font: { size: 10 }}}
+        }
+    }
+});
+</script>
+{% endif %}
+{% endblock %}

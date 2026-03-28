@@ -1,0 +1,19 @@
+[Unit]
+Description=Lock In Focus Guard — re-applies blocking if tampered with
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/lockin-guard
+Restart=always
+RestartSec=2
+# Prevent easy manual stop during session
+RefuseManualStop=yes
+# Hardening
+ProtectHome=read-only
+NoNewPrivileges=no
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
