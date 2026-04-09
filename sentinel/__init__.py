@@ -1,0 +1,1 @@
+# LockIn — Input Sentinel

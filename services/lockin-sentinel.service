@@ -1,0 +1,25 @@
+[Unit]
+Description=LockIn Input Sentinel — system-wide keystroke monitor
+After=graphical.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/lockin/sentinel/input_monitor.py
+
+# --- Unkillable ---
+Restart=always
+RestartSec=2
+StartLimitIntervalSec=0
+RefuseManualStop=yes
+
+# Runs as root (needs /dev/input access)
+# Launches GUI as desktop user
+Environment=SUDO_USER=aziz-bakker
+Environment=SUDO_UID=1000
+
+# System hardening
+ProtectSystem=full
+ProtectHome=read-only
+
+[Install]
+WantedBy=graphical.target

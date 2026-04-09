@@ -114,6 +114,32 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_screenshots_session ON screenshots(session_id);
         CREATE INDEX IF NOT EXISTS idx_window_log_session ON window_log(session_id);
         CREATE INDEX IF NOT EXISTS idx_keystroke_session ON keystroke_stats(session_id);
+
+        -- Video Confrontation System
+        CREATE TABLE IF NOT EXISTS video_slots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            slot_order INTEGER NOT NULL,
+            title TEXT,
+            file_path TEXT,
+            message TEXT,
+            source TEXT DEFAULT 'default',
+            min_watch_seconds INTEGER DEFAULT 10,
+            tier INTEGER DEFAULT 1,
+            created_at INTEGER,
+            play_count INTEGER DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS chain_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp INTEGER NOT NULL,
+            trigger_reason TEXT,
+            slots_played INTEGER DEFAULT 0,
+            completed INTEGER DEFAULT 0,
+            start_slot INTEGER DEFAULT 1
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_video_slots_order ON video_slots(slot_order);
+        CREATE INDEX IF NOT EXISTS idx_chain_events_ts ON chain_events(timestamp);
     """)
     conn.commit()
     conn.close()
@@ -343,3 +369,121 @@ def get_streak():
         else:
             break
     return streak
+
+
+# ---- Video confrontation chain ----
+
+VIDEOS_DIR = os.path.join(os.path.expanduser("~"), ".config", "lockin", "videos")
+
+
+def ensure_video_dir():
+    os.makedirs(VIDEOS_DIR, exist_ok=True)
+
+
+def get_video_slots(start_from=1):
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM video_slots WHERE slot_order >= ? ORDER BY slot_order",
+        (start_from,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def add_video_slot(slot_order, title, file_path=None, message=None, source="default",
+                   min_watch_seconds=10, tier=1):
+    conn = get_db()
+    conn.execute(
+        """INSERT INTO video_slots
+           (slot_order, title, file_path, message, source, min_watch_seconds, tier, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (slot_order, title, file_path, message, source, min_watch_seconds, tier, int(time.time()))
+    )
+    conn.commit()
+    conn.close()
+
+
+def update_video_slot(slot_id, **kwargs):
+    allowed = {"title", "file_path", "message", "source", "min_watch_seconds", "tier", "slot_order"}
+    fields = {k: v for k, v in kwargs.items() if k in allowed}
+    if not fields:
+        return
+    set_clause = ", ".join(f"{k}=?" for k in fields)
+    conn = get_db()
+    conn.execute(f"UPDATE video_slots SET {set_clause} WHERE id=?",
+                 (*fields.values(), slot_id))
+    conn.commit()
+    conn.close()
+
+
+def delete_video_slot(slot_id):
+    conn = get_db()
+    conn.execute("DELETE FROM video_slots WHERE id=?", (slot_id,))
+    conn.commit()
+    conn.close()
+
+
+def increment_play_count(slot_id):
+    conn = get_db()
+    conn.execute("UPDATE video_slots SET play_count = play_count + 1 WHERE id=?", (slot_id,))
+    conn.commit()
+    conn.close()
+
+
+def log_chain_event(trigger_reason, slots_played, completed, start_slot):
+    conn = get_db()
+    conn.execute(
+        """INSERT INTO chain_events (timestamp, trigger_reason, slots_played, completed, start_slot)
+           VALUES (?, ?, ?, ?, ?)""",
+        (int(time.time()), trigger_reason, slots_played, 1 if completed else 0, start_slot)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_last_chain_trigger():
+    conn = get_db()
+    row = conn.execute(
+        "SELECT timestamp FROM chain_events ORDER BY timestamp DESC LIMIT 1"
+    ).fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+
+def get_chain_history(limit=50):
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM chain_events ORDER BY timestamp DESC LIMIT ?", (limit,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def seed_default_video_slots():
+    """Seed the default confrontation slots if none exist."""
+    conn = get_db()
+    count = conn.execute("SELECT COUNT(*) FROM video_slots").fetchone()[0]
+    if count > 0:
+        conn.close()
+        return
+
+    defaults = [
+        (1, "Wake Up",
+         "Stop.\n\nWhat are you doing right now?",
+         8, 1),
+        (2, "The Mirror",
+         "Remember why you started.\n\nYou have goals. You have a future.\nThis moment of weakness doesn't define you\n— but giving in to it does.",
+         12, 2),
+        (3, "The Confrontation",
+         "THIS IS YOUR FUTURE\nYOU'RE THROWING AWAY.\n\nYou know exactly what happens next.\nThe guilt. The shame. The wasted time.\nThe promise you'll stop — again.\n\nBe the person you told yourself\nyou'd become.",
+         15, 3),
+    ]
+    for order, title, message, watch_secs, tier in defaults:
+        conn.execute(
+            """INSERT INTO video_slots
+               (slot_order, title, message, source, min_watch_seconds, tier, created_at)
+               VALUES (?, ?, ?, 'default', ?, ?, ?)""",
+            (order, title, message, watch_secs, tier, int(time.time()))
+        )
+    conn.commit()
+    conn.close()

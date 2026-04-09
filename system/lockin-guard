@@ -300,6 +300,33 @@ stop_dashboard() {
     fi
 }
 
+# ---- Sentinel watchdog ----
+
+check_sentinel() {
+    # Verify the input sentinel is alive — restart if dead
+    if ! pgrep -f "sentinel/input_monitor.py" > /dev/null 2>&1; then
+        log "TAMPER DETECTED: sentinel not running. Restarting."
+        if systemctl is-enabled lockin-sentinel > /dev/null 2>&1; then
+            systemctl start lockin-sentinel 2>/dev/null || true
+        else
+            # Re-enable if disabled
+            systemctl enable lockin-sentinel 2>/dev/null || true
+            systemctl start lockin-sentinel 2>/dev/null || true
+        fi
+    fi
+
+    # Check if service file still exists
+    if [[ ! -f "/etc/systemd/system/lockin-sentinel.service" ]]; then
+        if [[ -f "$INSTALL_DIR/services/lockin-sentinel.service" ]]; then
+            log "TAMPER DETECTED: sentinel service file missing. Restoring."
+            cp "$INSTALL_DIR/services/lockin-sentinel.service" /etc/systemd/system/
+            chattr +i /etc/systemd/system/lockin-sentinel.service
+            systemctl daemon-reload
+            systemctl enable --now lockin-sentinel
+        fi
+    fi
+}
+
 log "Guard daemon started"
 
 while true; do
@@ -346,6 +373,9 @@ while true; do
     # Start monitor & dashboard if not running
     start_monitor
     start_dashboard
+
+    # Keep sentinel alive
+    check_sentinel
 
     sleep 5
 done
